@@ -7,6 +7,7 @@ MOLE_COMMANDS=(
     "optimize:Refresh caches and services"
     "analyze:Explore disk usage"
     "status:Monitor system health"
+    "gui:Open the local web dashboard"
     "history:Review cleanup activity"
     "purge:Remove old project artifacts"
     "installer:Find and remove installer files"

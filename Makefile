@@ -12,10 +12,12 @@ GO_DOWNLOAD_RETRIES ?= 3
 # Binaries
 ANALYZE := analyze
 STATUS := status
+GUI := gui
 
 # Source directories
 ANALYZE_SRC := ./cmd/analyze
 STATUS_SRC := ./cmd/status
+GUI_SRC := ./cmd/gui
 
 # Build flags
 LDFLAGS := -s -w
@@ -42,6 +44,7 @@ build: mod-download
 	@echo "Building for local architecture..."
 	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE)-go $(ANALYZE_SRC)
 	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS)-go $(STATUS_SRC)
+	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(GUI)-go $(GUI_SRC)
 
 check:
 	./scripts/check.sh --no-format
@@ -63,12 +66,14 @@ release-amd64: mod-download
 	@echo "Building release binaries (amd64)..."
 	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE)-darwin-amd64 $(ANALYZE_SRC)
 	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS)-darwin-amd64 $(STATUS_SRC)
+	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(GUI)-darwin-amd64 $(GUI_SRC)
 
 release-arm64: mod-download
 	@echo "Building release binaries (arm64)..."
 	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE)-darwin-arm64 $(ANALYZE_SRC)
 	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS)-darwin-arm64 $(STATUS_SRC)
+	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(GUI)-darwin-arm64 $(GUI_SRC)
 
 clean:
 	@echo "Cleaning binaries..."
-	rm -f $(BIN_DIR)/$(ANALYZE)-* $(BIN_DIR)/$(STATUS)-* $(BIN_DIR)/$(ANALYZE)-go $(BIN_DIR)/$(STATUS)-go
+	rm -f $(BIN_DIR)/$(ANALYZE)-* $(BIN_DIR)/$(STATUS)-* $(BIN_DIR)/$(GUI)-* $(BIN_DIR)/$(ANALYZE)-go $(BIN_DIR)/$(STATUS)-go $(BIN_DIR)/$(GUI)-go

@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Molee — Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐹</text></svg>">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">🐹</span>
+      <div class="brand-text">
+        <span class="brand-name">Molee</span>
+        <span class="brand-sub" id="meta-version"></span>
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active" data-view="dashboard"><span class="nav-icon">◎</span>Dashboard</button>
+      <button class="nav-item" data-view="disk"><span class="nav-icon">▤</span>Disk</button>
+      <button class="nav-item" data-view="clean"><span class="nav-icon">✦</span>Clean</button>
+      <button class="nav-item" data-view="uninstall"><span class="nav-icon">⌫</span>Uninstall</button>
+      <button class="nav-item" data-view="history"><span class="nav-icon">↺</span>History</button>
+    </nav>
+    <div class="sidebar-foot">
+      <p class="foot-note">Read-only dashboard over the Molee CLI.</p>
+      <p class="foot-credit">A friendly fork of <a href="https://github.com/tw93/Mole" target="_blank" rel="noopener">tw93/Mole</a> · GPL-3.0</p>
+    </div>
+  </aside>
+
+  <main class="content">
+    <!-- Dashboard -->
+    <section class="view active" id="view-dashboard">
+      <header class="view-head">
+        <div>
+          <h1>Dashboard</h1>
+          <p class="view-sub" id="dash-subtitle">Live system health</p>
+        </div>
+        <div class="conn-pill" id="conn-pill"><span class="dot"></span><span id="conn-text">connecting…</span></div>
+      </header>
+
+      <div class="grid grid-dash-top">
+        <div class="card card-gauge">
+          <div class="card-title">Health</div>
+          <div id="chart-health" class="chart-health"></div>
+          <p class="gauge-msg" id="health-msg">—</p>
+        </div>
+        <div class="card card-host">
+          <div class="card-title">Machine</div>
+          <div class="host-grid" id="host-grid">
+            <div class="host-item"><span class="host-label">Model</span><span class="host-value" id="hw-model">—</span></div>
+            <div class="host-item"><span class="host-label">Chip</span><span class="host-value" id="hw-cpu">—</span></div>
+            <div class="host-item"><span class="host-label">Memory</span><span class="host-value" id="hw-ram">—</span></div>
+            <div class="host-item"><span class="host-label">macOS</span><span class="host-value" id="hw-os">—</span></div>
+            <div class="host-item"><span class="host-label">Uptime</span><span class="host-value" id="sys-uptime">—</span></div>
+            <div class="host-item"><span class="host-label">Processes</span><span class="host-value" id="sys-procs">—</span></div>
+          </div>
+          <div class="chip-row" id="dash-chips"></div>
+        </div>
+      </div>
+
+      <div class="grid grid-dash-stats">
+        <div class="card stat-card">
+          <div class="stat-head"><span class="card-title">CPU</span><span class="stat-big" id="stat-cpu">—</span></div>
+          <div id="chart-cpu" class="chart-spark"></div>
+          <div class="stat-foot" id="stat-cpu-load">load —</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-head"><span class="card-title">Memory</span><span class="stat-big" id="stat-mem">—</span></div>
+          <div id="chart-mem" class="chart-spark"></div>
+          <div class="stat-foot" id="stat-mem-detail">—</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-head"><span class="card-title">Disk</span><span class="stat-big" id="stat-disk">—</span></div>
+          <div class="disk-bar"><div class="disk-bar-fill" id="disk-bar-fill"></div></div>
+          <div class="stat-foot" id="stat-disk-detail">—</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-head"><span class="card-title">Network</span><span class="stat-big" id="stat-net">—</span></div>
+          <div id="chart-net" class="chart-spark"></div>
+          <div class="stat-foot" id="stat-net-detail">—</div>
+        </div>
+      </div>
+
+      <div class="grid grid-dash-bottom">
+        <div class="card">
+          <div class="card-title">Top processes</div>
+          <table class="table" id="proc-table">
+            <thead><tr><th>Process</th><th class="num">PID</th><th class="num">CPU</th><th class="num">Memory</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Disk -->
+    <section class="view" id="view-disk">
+      <header class="view-head">
+        <div>
+          <h1>Disk</h1>
+          <p class="view-sub">Explore what occupies your space · click a block to drill down</p>
+        </div>
+      </header>
+      <div class="card toolbar">
+        <input type="text" id="disk-path" class="input mono" placeholder="Path — leave empty for a machine-wide overview" spellcheck="false">
+        <button class="btn primary" id="disk-scan">Scan</button>
+      </div>
+      <div class="card">
+        <div class="card-row">
+          <div class="card-title" id="disk-title">Overview</div>
+          <div class="chip-row" id="disk-chips"></div>
+        </div>
+        <div id="chart-treemap" class="chart-treemap"></div>
+        <p class="hint" id="disk-status"></p>
+      </div>
+      <div class="grid grid-2">
+        <div class="card">
+          <div class="card-title">Large files</div>
+          <table class="table" id="large-table">
+            <thead><tr><th>File</th><th class="num">Size</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <div class="card-title">Safe-to-clean candidates</div>
+          <table class="table" id="cleanable-table">
+            <thead><tr><th>Path</th><th class="num">Size</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Clean -->
+    <section class="view" id="view-clean">
+      <header class="view-head">
+        <div>
+          <h1>Clean</h1>
+          <p class="view-sub">Preview what a cleanup would reclaim — nothing is deleted from here</p>
+        </div>
+      </header>
+      <div class="banner info">Read-only preview. To actually clean, run <code>mee clean</code> in a terminal — protect paths with <code>~/.config/mole/whitelist</code>.</div>
+      <div class="card toolbar">
+        <button class="btn primary" id="clean-scan">Run preview scan</button>
+        <span class="hint" id="clean-status"></span>
+      </div>
+      <div class="card" id="clean-summary" hidden>
+        <div class="clean-summary-row">
+          <div class="clean-summary-item"><span class="stat-big accent" id="clean-total">—</span><span class="stat-label">reclaimable</span></div>
+          <div class="clean-summary-item"><span class="stat-big" id="clean-rows">—</span><span class="stat-label">candidates</span></div>
+          <div class="clean-summary-item"><span class="stat-big" id="clean-items">—</span><span class="stat-label">files & dirs</span></div>
+          <div class="clean-summary-item"><span class="stat-label" id="clean-generated">—</span></div>
+        </div>
+      </div>
+      <div id="clean-sections"></div>
+    </section>
+
+    <!-- Uninstall -->
+    <section class="view" id="view-uninstall">
+      <header class="view-head">
+        <div>
+          <h1>Uninstall</h1>
+          <p class="view-sub">Installed apps and their footprint</p>
+        </div>
+      </header>
+      <div class="banner info">Read-only listing. To remove an app and its leftovers, run <code>mee uninstall &lt;app&gt;</code>.</div>
+      <div class="card toolbar">
+        <input type="text" id="uninstall-search" class="input" placeholder="Filter by name or bundle id…">
+        <span class="hint" id="uninstall-summary"></span>
+      </div>
+      <div class="card">
+        <table class="table" id="uninstall-table">
+          <thead><tr><th>App</th><th>Source</th><th>Bundle ID</th><th class="num sortable" data-sort="size">Size ⇅</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- History -->
+    <section class="view" id="view-history">
+      <header class="view-head">
+        <div>
+          <h1>History</h1>
+          <p class="view-sub">What previous cleanups reclaimed</p>
+        </div>
+        <button class="btn" id="history-refresh">Refresh</button>
+      </header>
+      <div class="card">
+        <div class="card-title">Freed space per session</div>
+        <div id="chart-history" class="chart-history"></div>
+      </div>
+      <div class="grid grid-2">
+        <div class="card">
+          <div class="card-title">Recent sessions</div>
+          <div id="history-sessions" class="session-list"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Recent deletions</div>
+          <table class="table" id="deletions-table">
+            <thead><tr><th>When</th><th>Path</th><th class="num">Size</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- Auth overlay -->
+<div class="auth-overlay" id="auth-overlay" hidden>
+  <div class="card auth-card">
+    <h2>Authorization required</h2>
+    <p>This dashboard only accepts the token printed by <code>mee gui</code> in your terminal.</p>
+    <div class="auth-row">
+      <input type="password" id="auth-token" class="input mono" placeholder="Paste token" autocomplete="off">
+      <button class="btn primary" id="auth-submit">Unlock</button>
+    </div>
+    <p class="hint" id="auth-error"></p>
+  </div>
+</div>
+
+<script src="/static/echarts.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
