@@ -37,6 +37,8 @@ func defaultRunAnalyze(ctx context.Context, scriptDir, path string) ([]byte, err
 }
 
 func defaultRunCleanPreview(ctx context.Context, rootDir string) (CleanPreview, error) {
+	ctx, cancel := context.WithTimeout(ctx, cleanPreviewTimeout)
+	defer cancel()
 	// Prefer the CLI's structured summary; fall back to the preview ledger
 	// when an older CLI without `--json` is deployed.
 	if out, err := runCommand(ctx, filepath.Join(rootDir, "mole"), "clean", "--dry-run", "--json"); err == nil {

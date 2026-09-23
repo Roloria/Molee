@@ -507,10 +507,6 @@ clean_only_path_allowed() {
 # The report is a single compact JSON object printed as the last stdout line;
 # progress lines above it are ordinary human output. Consumers parse `tail -1`.
 
-_clean_json_string() {
-    mole_json_string "$1"
-}
-
 # emit_clean_preview_json walks the same deduplicated dry-run ledger as
 # render_clean_preview_from_ledger and prints one JSON line. Accounting mirrors
 # the renderer: rows covered by a measured ancestor are listed (so the user can
@@ -524,7 +520,7 @@ emit_clean_preview_json() {
     local -a seen_sections=()
 
     printf '{"mode":"clean_preview","generated_at":'
-    _clean_json_string "$(date '+%Y-%m-%d %H:%M:%S')"
+    mole_json_string "$(date '+%Y-%m-%d %H:%M:%S')"
     printf ',"sections":['
 
     if [[ -n "${CLEAN_PREVIEW_LEDGER_FILE:-}" && -f "$CLEAN_PREVIEW_LEDGER_FILE" ]]; then
@@ -548,7 +544,7 @@ emit_clean_preview_json() {
                     printf ','
                 fi
                 printf '{"name":'
-                _clean_json_string "$section"
+                mole_json_string "$section"
                 printf ',"items":['
                 current_section="$section"
                 section_open=true
@@ -565,11 +561,11 @@ emit_clean_preview_json() {
                 printf ','
             fi
             printf '{"path":'
-            _clean_json_string "$path"
+            mole_json_string "$path"
             printf ',"size_kb":%s,"size_known":%s,"items":%s' "$size_kb" "$size_known" "$count"
             if [[ -n "$covered_by" ]]; then
                 printf ',"covered_by":'
-                _clean_json_string "$covered_by"
+                mole_json_string "$covered_by"
             fi
             printf '}'
             rendered_rows=$((rendered_rows + 1))

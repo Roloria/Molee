@@ -5,7 +5,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
+
 	"strconv"
 	"strings"
 )
@@ -280,11 +280,4 @@ func lastJSONLine(out []byte) []byte {
 		}
 	}
 	return nil
-}
-
-// SortSections orders sections by reclaimable size, largest first.
-func (p *CleanPreview) SortSections() {
-	sort.SliceStable(p.Sections, func(i, j int) bool {
-		return p.Sections[i].TotalBytes > p.Sections[j].TotalBytes
-	})
 }

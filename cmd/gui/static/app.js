@@ -104,7 +104,12 @@ const AXIS_STYLE = {
 };
 
 function makeChart(elId) {
-  const chart = echarts.init($(elId), null, { renderer: "canvas" });
+  // Reuse an existing instance: echarts.init on an element that already has
+  // one leaks the old canvas and logs a warning on every refresh.
+  const dom = $(elId);
+  const existing = echarts.getInstanceByDom(dom);
+  if (existing) return existing;
+  const chart = echarts.init(dom, null, { renderer: "canvas" });
   charts.push(chart);
   return chart;
 }
@@ -194,7 +199,6 @@ const dash = {
   cpuBuf: [],
   memBuf: [],
   gauge: null, cpu: null, mem: null, net: null,
-  lastNet: { rx: [], tx: [] },
 };
 
 function setupDashboard() {
@@ -457,19 +461,12 @@ function renderDisk(data) {
       roam: false,
       nodeClick: false,
       breadcrumb: { show: true, bottom: 0, itemStyle: { borderColor: "#1e2433", textStyle: { color: "#8b93a7" } } },
-      label: { show: true, formatter: "{b}\n{c}" },
+      label: { show: true, formatter: (p) => `${p.name}\n${fmtBytes(p.value)}` },
       upperLabel: { show: true, height: 22, color: "#e7eaf1" },
       itemStyle: { borderColor: "#0a0d13", borderWidth: 2, gapWidth: 2 },
       levels: [{ color: ["#2f5fd0", "#3b74e8", "#4c88f5", "#5b9dff", "#7fb0ff"] }],
     }],
   }, true);
-  // human-readable labels after initial set
-  diskState.chart.setOption({
-    series: [{
-      label: { formatter: (p) => `${p.name}\n${fmtBytes(p.value)}` },
-      upperLabel: {},
-    }],
-  });
 
   /* large files */
   const lfTbody = $("#large-table tbody");

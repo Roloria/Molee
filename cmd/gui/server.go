@@ -216,7 +216,12 @@ func (s *Server) handleMeta(w http.ResponseWriter, _ *http.Request) {
 		"version":  appVersion,
 		"tagline":  appTagline,
 		"interval": s.cfg.Interval,
-		"readonly": true,
+		"capabilities": map[string]bool{
+			// Executions all route through the CLI's safety engine.
+			"clean_execute": true,
+			"purge_execute": true,
+			"optimize":      true,
+		},
 	})
 }
 
@@ -240,18 +245,25 @@ func (s *Server) handleCleanPreview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, preview)
 }
 
-// handleCleanExecute streams a restricted cleanup as Server-Sent Events over
-// POST (the dashboard reads the stream with fetch; EventSource cannot POST).
-func (s *Server) handleCleanExecute(w http.ResponseWriter, r *http.Request) {
+// executePathsRequest is the shared body of the clean/purge execute
+// endpoints: a validated list of paths to hand to a restricted CLI run.
+type executePathsRequest struct {
+	Paths []string `json:"paths"`
+}
+
+// streamExecutionSSE runs an execution and streams its progress as
+// Server-Sent Events over POST (the dashboard reads the stream with fetch;
+// EventSource cannot POST). The runner receives the validated paths and a
+// progress callback, and returns the final event; the HTTP plumbing is
+// shared by clean and purge.
+func (s *Server) streamExecutionSSE(w http.ResponseWriter, r *http.Request, run func(ctx context.Context, paths []string, onProgress func(CleanProgressEvent)) CleanProgressEvent) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
 
-	var req struct {
-		Paths []string `json:"paths"`
-	}
+	var req executePathsRequest
 	body, err := io.ReadAll(io.LimitReader(r.Body, executeBodyLimit))
 	if err != nil || json.Unmarshal(body, &req) != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
@@ -266,22 +278,12 @@ func (s *Server) handleCleanExecute(w http.ResponseWriter, r *http.Request) {
 	events := make(chan CleanProgressEvent, 64)
 	go func() {
 		defer close(events)
-		result, execErr := s.runCleanExecute(ctx, s.cfg.RootDir, req.Paths, func(ev CleanProgressEvent) {
+		final := run(ctx, req.Paths, func(ev CleanProgressEvent) {
 			select {
 			case events <- ev:
 			case <-ctx.Done():
 			}
 		})
-		final := CleanProgressEvent{
-			Type:       "result",
-			FreedKB:    result.FreedKB,
-			Items:      result.Items,
-			Categories: result.Categories,
-			Cancelled:  result.Cancelled,
-		}
-		if execErr != nil {
-			final.Message = execErr.Error()
-		}
 		select {
 		case events <- final:
 		case <-ctx.Done():
@@ -315,6 +317,25 @@ func (s *Server) handleCleanExecute(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleCleanExecute streams a restricted cleanup; every path still passes
+// the CLI's full safety engine at the sink.
+func (s *Server) handleCleanExecute(w http.ResponseWriter, r *http.Request) {
+	s.streamExecutionSSE(w, r, func(ctx context.Context, paths []string, onProgress func(CleanProgressEvent)) CleanProgressEvent {
+		result, execErr := s.runCleanExecute(ctx, s.cfg.RootDir, paths, onProgress)
+		final := CleanProgressEvent{
+			Type:       "result",
+			FreedKB:    result.FreedKB,
+			Items:      result.Items,
+			Categories: result.Categories,
+			Cancelled:  result.Cancelled,
+		}
+		if execErr != nil {
+			final.Message = execErr.Error()
+		}
+		return final
+	})
+}
+
 // handleOptimize runs a dry-run inspection or a real optimize pass and
 // returns the CLI's structured report. `{"dry_run":true}` previews.
 func (s *Server) handleOptimize(w http.ResponseWriter, r *http.Request) {
@@ -325,9 +346,11 @@ func (s *Server) handleOptimize(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DryRun bool `json:"dry_run"`
 	}
+	// Fail safe: an unreadable or malformed body previews instead of running.
+	req.DryRun = true
 	body, err := io.ReadAll(io.LimitReader(r.Body, executeBodyLimit))
-	if err != nil || len(body) == 0 || json.Unmarshal(body, &req) != nil {
-		req.DryRun = false
+	if err == nil && len(body) > 0 {
+		_ = json.Unmarshal(body, &req)
 	}
 	report, err := s.runOptimize(r.Context(), s.cfg.RootDir, req.DryRun)
 	if err != nil {
@@ -351,38 +374,10 @@ func (s *Server) handlePurgePreview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, preview)
 }
 
-// handlePurgeExecute streams a restricted purge as Server-Sent Events over
-// POST, mirroring the clean execution flow.
+// handlePurgeExecute streams a restricted purge, mirroring the clean flow.
 func (s *Server) handlePurgeExecute(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")
-		return
-	}
-
-	var req struct {
-		Paths []string `json:"paths"`
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, executeBodyLimit))
-	if err != nil || json.Unmarshal(body, &req) != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if err := validateCleanPaths(req.Paths); err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	ctx := r.Context()
-	events := make(chan CleanProgressEvent, 64)
-	go func() {
-		defer close(events)
-		result, execErr := s.runPurgeExecute(ctx, s.cfg.RootDir, req.Paths, func(ev CleanProgressEvent) {
-			select {
-			case events <- ev:
-			case <-ctx.Done():
-			}
-		})
+	s.streamExecutionSSE(w, r, func(ctx context.Context, paths []string, onProgress func(CleanProgressEvent)) CleanProgressEvent {
+		result, execErr := s.runPurgeExecute(ctx, s.cfg.RootDir, paths, onProgress)
 		final := CleanProgressEvent{
 			Type:      "result",
 			FreedKB:   result.FreedKB,
@@ -392,37 +387,8 @@ func (s *Server) handlePurgeExecute(w http.ResponseWriter, r *http.Request) {
 		if execErr != nil {
 			final.Message = execErr.Error()
 		}
-		select {
-		case events <- final:
-		case <-ctx.Done():
-		}
-	}()
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	startEvent, _ := json.Marshal(CleanProgressEvent{Type: "start"})
-	fmt.Fprintf(w, "data: %s\n\n", startEvent)
-	flusher.Flush()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev, ok := <-events:
-			if !ok {
-				fmt.Fprint(w, "event: end\n\n")
-				flusher.Flush()
-				return
-			}
-			payload, err := json.Marshal(ev)
-			if err != nil {
-				continue
-			}
-			fmt.Fprintf(w, "data: %s\n\n", payload)
-			flusher.Flush()
-		}
-	}
+		return final
+	})
 }
 
 func (s *Server) handleWhitelist(w http.ResponseWriter, r *http.Request) {
