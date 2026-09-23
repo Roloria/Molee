@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -200,6 +201,85 @@ func humanBytes(b int64) string {
 	default:
 		return fmt.Sprintf("%dB", b)
 	}
+}
+
+// cliCleanPreview mirrors `mole clean --dry-run --json` (single-line JSON on
+// the last stdout line).
+type cliCleanPreview struct {
+	Mode        string `json:"mode"`
+	GeneratedAt string `json:"generated_at"`
+	Sections    []struct {
+		Name  string `json:"name"`
+		Items []struct {
+			Path      string `json:"path"`
+			SizeKB    int64  `json:"size_kb"`
+			SizeKnown bool   `json:"size_known"`
+			Items     int    `json:"items"`
+			CoveredBy string `json:"covered_by"`
+		} `json:"items"`
+	} `json:"sections"`
+	TotalKB    int64 `json:"total_kb"`
+	TotalKnown bool  `json:"total_known"`
+	Partial    bool  `json:"partial"`
+	Rows       int   `json:"rows"`
+	Items      int   `json:"items"`
+	Categories int   `json:"categories"`
+}
+
+// cleanPreviewFromCLIJSON converts the CLI summary into the dashboard schema.
+func cleanPreviewFromCLIJSON(data []byte) (CleanPreview, error) {
+	var cli cliCleanPreview
+	if err := json.Unmarshal(data, &cli); err != nil {
+		return CleanPreview{}, err
+	}
+	if cli.Mode != "clean_preview" {
+		return CleanPreview{}, fmt.Errorf("unexpected clean report mode %q", cli.Mode)
+	}
+
+	preview := CleanPreview{
+		GeneratedAt: cli.GeneratedAt,
+		TotalBytes:  cli.TotalKB * 1024,
+		TotalKnown:  cli.TotalKnown,
+		Partial:     cli.Partial,
+		Rows:        cli.Rows,
+		Items:       cli.Items,
+		Sections:    make([]CleanSection, 0, len(cli.Sections)),
+	}
+	for _, section := range cli.Sections {
+		out := CleanSection{Name: section.Name}
+		for _, item := range section.Items {
+			out.Items = append(out.Items, CleanItem{
+				Path:        item.Path,
+				SizeBytes:   item.SizeKB * 1024,
+				SizeDisplay: humanBytes(item.SizeKB * 1024),
+				Items:       item.Items,
+				CoveredBy:   item.CoveredBy,
+				SizeKnown:   item.SizeKnown,
+			})
+			if item.CoveredBy == "" {
+				out.TotalBytes += item.SizeKB * 1024
+				out.Rows++
+			}
+		}
+		preview.Sections = append(preview.Sections, out)
+	}
+	return preview, nil
+}
+
+// lastJSONLine returns the last stdout line that parses as a JSON object. The
+// clean CLI prints progress text first and its report as the final line.
+func lastJSONLine(out []byte) []byte {
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "{") {
+			continue
+		}
+		var probe map[string]any
+		if json.Unmarshal([]byte(trimmed), &probe) == nil {
+			return []byte(trimmed)
+		}
+	}
+	return nil
 }
 
 // SortSections orders sections by reclaimable size, largest first.

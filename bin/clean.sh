@@ -135,6 +135,10 @@ SECTION_ACTIVITY=0
 files_cleaned=0
 total_size_cleaned=0
 whitelist_skipped_count=0
+CLEAN_JSON_OUTPUT=false
+CLEAN_ONLY_MODE=false
+CLEAN_ONLY_FROM_FILE=""
+CLEAN_ONLY_PATHS=()
 PROJECT_ARTIFACT_HINT_DETECTED=false
 PROJECT_ARTIFACT_HINT_COUNT=0
 PROJECT_ARTIFACT_HINT_TRUNCATED=false
@@ -457,6 +461,157 @@ write_clean_preview_header() {
 #
 
 EOF
+}
+
+# Load the newline-separated path list for `clean --only-from`. Blank lines
+# and # comments are ignored; every remaining line must be an exact path as it
+# appeared in a preview. The list stays small (bounded) so the per-target
+# membership check in _safe_clean_impl can stay a plain array scan.
+load_clean_only_paths() {
+    local file="$1"
+    if [[ ! -r "$file" ]]; then
+        echo "mo clean: --only-from file is not readable: $file" >&2
+        return 1
+    fi
+
+    CLEAN_ONLY_PATHS=()
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        CLEAN_ONLY_PATHS+=("$line")
+    done < "$file"
+
+    if [[ ${#CLEAN_ONLY_PATHS[@]} -eq 0 ]]; then
+        echo "mo clean: --only-from file lists no paths: $file" >&2
+        return 1
+    fi
+    if [[ ${#CLEAN_ONLY_PATHS[@]} -gt 500 ]]; then
+        echo "mo clean: --only-from accepts at most 500 paths" >&2
+        return 1
+    fi
+}
+
+clean_only_path_allowed() {
+    local needle="$1" candidate
+    for candidate in "${CLEAN_ONLY_PATHS[@]+"${CLEAN_ONLY_PATHS[@]}"}"; do
+        [[ "$candidate" == "$needle" ]] && return 0
+    done
+    return 1
+}
+
+# --- machine-readable summary (--json) -------------------------------------
+# The report is a single compact JSON object printed as the last stdout line;
+# progress lines above it are ordinary human output. Consumers parse `tail -1`.
+
+_clean_json_escape() {
+    local s="$1"
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    # JSON forbids raw control characters; paths legitimately never need them.
+    printf '%s' "$s" | LC_ALL=C tr -d '\000-\010\012\013\014\015\016-\037'
+}
+
+_clean_json_string() {
+    printf '"'
+    _clean_json_escape "$1"
+    printf '"'
+}
+
+# emit_clean_preview_json walks the same deduplicated dry-run ledger as
+# render_clean_preview_from_ledger and prints one JSON line. Accounting mirrors
+# the renderer: rows covered by a measured ancestor are listed (so the user can
+# whitelist them) but their bytes are already inside the ancestor's totals.
+emit_clean_preview_json() {
+    local identity size_kb count size_known section path covered_by
+    local current_section=""
+    local section_open=false first_section=true first_item=true
+    local known_size_kb=0 rendered_items=0 rendered_categories=0 rendered_rows=0
+    local unknown_uncovered=0
+    local -a seen_sections=()
+
+    printf '{"mode":"clean_preview","generated_at":'
+    _clean_json_string "$(date '+%Y-%m-%d %H:%M:%S')"
+    printf ',"sections":['
+
+    if [[ -n "${CLEAN_PREVIEW_LEDGER_FILE:-}" && -f "$CLEAN_PREVIEW_LEDGER_FILE" ]]; then
+        while IFS= read -r -d '' identity &&
+            IFS= read -r -d '' size_kb &&
+            IFS= read -r -d '' count &&
+            IFS= read -r -d '' size_known &&
+            IFS= read -r -d '' section &&
+            IFS= read -r -d '' path &&
+            IFS= read -r -d '' covered_by; do
+            [[ "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
+            [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]] || count=1
+
+            if [[ "$section" != "$current_section" ]]; then
+                if [[ "$section_open" == "true" ]]; then
+                    printf ']}'
+                fi
+                if [[ "$first_section" == "true" ]]; then
+                    first_section=false
+                else
+                    printf ','
+                fi
+                printf '{"name":'
+                _clean_json_string "$section"
+                printf ',"items":['
+                current_section="$section"
+                section_open=true
+                first_item=true
+                if [[ ${#seen_sections[@]} -eq 0 ]] || ! mole_identity_in_list "$section" "${seen_sections[@]}"; then
+                    seen_sections+=("$section")
+                    rendered_categories=$((rendered_categories + 1))
+                fi
+            fi
+
+            if [[ "$first_item" == "true" ]]; then
+                first_item=false
+            else
+                printf ','
+            fi
+            printf '{"path":'
+            _clean_json_string "$path"
+            printf ',"size_kb":%s,"size_known":%s,"items":%s' "$size_kb" "$size_known" "$count"
+            if [[ -n "$covered_by" ]]; then
+                printf ',"covered_by":'
+                _clean_json_string "$covered_by"
+            fi
+            printf '}'
+            rendered_rows=$((rendered_rows + 1))
+
+            [[ -n "$covered_by" ]] && continue
+            if [[ "$size_known" == "true" ]]; then
+                known_size_kb=$((known_size_kb + size_kb))
+            else
+                unknown_uncovered=$((unknown_uncovered + 1))
+            fi
+            rendered_items=$((rendered_items + count))
+        done < <(emit_deduplicated_dry_run_ledger)
+    fi
+
+    if [[ "$section_open" == "true" ]]; then
+        printf ']}'
+    fi
+
+    local total_known=true partial=false
+    [[ "$unknown_uncovered" -gt 0 ]] && total_known=false && partial=true
+
+    printf '],"total_kb":%d,"total_known":%s,"partial":%s,"rows":%d,"items":%d,"categories":%d}\n' \
+        "$known_size_kb" "$total_known" "$partial" "$rendered_rows" "$rendered_items" "$rendered_categories"
+}
+
+emit_clean_result_json() {
+    local cancel_rc="$1"
+    local partial=false
+    [[ "${MOLE_CLEAN_SIZING_TIMEOUTS:-0}" -gt 0 ]] && partial=true
+    printf '{"mode":"clean_result","cancelled":%s,"freed_kb":%d,"items":%d,"categories":%d,"partial":%s,"sizing_timeouts":%d,"removal_timeouts":%d}\n' \
+        "$([[ "$cancel_rc" -eq 0 ]] && echo false || echo true)" \
+        "$total_size_cleaned" "$files_cleaned" "$total_items" \
+        "$partial" "${MOLE_CLEAN_SIZING_TIMEOUTS:-0}" "${MOLE_CLEAN_REMOVAL_TIMEOUTS:-0}"
 }
 
 render_clean_preview_from_ledger() {
@@ -998,6 +1153,17 @@ _safe_clean_impl() {
     local -a existing_paths=()
     for path in "${targets[@]}"; do
         local skip=false
+
+        # --only-from restricts this run to explicitly selected paths. The
+        # filter runs first and everything downstream (protection, whitelist,
+        # occupancy probes, deletion policy) still applies to what remains.
+        if [[ "$CLEAN_ONLY_MODE" == "true" ]] && ! clean_only_path_allowed "$path"; then
+            skip=true
+            skipped_count=$((skipped_count + 1))
+            log_operation "clean" "SKIPPED" "$path" "not selected"
+        fi
+
+        [[ "$skip" == "true" ]] && continue
 
         if should_protect_path "$path"; then
             skip=true
@@ -1588,6 +1754,13 @@ start_cleanup() {
         }
         write_clean_preview_header
 
+        # --only-from selections are user-level paths; system preview needs no
+        # sudo adoption and is filtered out downstream anyway.
+        if [[ "$CLEAN_ONLY_MODE" == "true" ]]; then
+            SYSTEM_CLEAN=false
+            return
+        fi
+
         # Preview system section when sudo is already cached (no password prompt).
         if adopt_sudo_session; then
             SYSTEM_CLEAN=true
@@ -1598,6 +1771,13 @@ start_cleanup() {
             echo -e "${GRAY}${ICON_WARNING} System caches need sudo, run ${NC}sudo -v && mo clean --dry-run${GRAY} for full preview${NC}"
             echo ""
         fi
+        return
+    fi
+
+    if [[ "$CLEAN_ONLY_MODE" == "true" ]]; then
+        SYSTEM_CLEAN=false
+        echo -e "${GRAY}${ICON_LIST}${NC} Only-from mode: cleaning the selected user-level paths"
+        echo ""
         return
     fi
 
@@ -1683,7 +1863,15 @@ perform_cleanup() {
         local -a summary_details
         summary_details=()
         summary_details+=("Test mode - no actual cleanup performed")
-        print_summary_block "$summary_heading" "${summary_details[@]}"
+        if [[ "$CLEAN_JSON_OUTPUT" == "true" ]]; then
+            if [[ "$DRY_RUN" == "true" ]]; then
+                emit_clean_preview_json
+            else
+                emit_clean_result_json 0
+            fi
+        else
+            print_summary_block "$summary_heading" "${summary_details[@]}"
+        fi
         printf '\n'
         return 0
     fi
@@ -2111,7 +2299,15 @@ perform_cleanup() {
     # Log session end with summary
     log_operation_session_end "clean" "$files_cleaned" "$total_size_cleaned"
 
-    print_summary_block "$summary_heading" "${summary_details[@]}"
+    if [[ "$CLEAN_JSON_OUTPUT" == "true" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            emit_clean_preview_json
+        else
+            emit_clean_result_json "$cleanup_cancel_rc"
+        fi
+    else
+        print_summary_block "$summary_heading" "${summary_details[@]}"
+    fi
     printf '\n'
 
     return "$cleanup_cancel_rc"
@@ -2170,6 +2366,17 @@ main() {
                 DRY_RUN=true
                 export MOLE_DRY_RUN=1
                 ;;
+            "--json")
+                CLEAN_JSON_OUTPUT=true
+                ;;
+            "--only-from")
+                shift
+                if [[ $# -eq 0 ]]; then
+                    echo "Missing file for --only-from" >&2
+                    exit 1
+                fi
+                CLEAN_ONLY_FROM_FILE="$1"
+                ;;
             "--external")
                 shift
                 if [[ $# -eq 0 ]]; then
@@ -2204,6 +2411,10 @@ main() {
 
     start_cleanup
     hide_cursor
+    if [[ -n "$CLEAN_ONLY_FROM_FILE" ]]; then
+        load_clean_only_paths "$CLEAN_ONLY_FROM_FILE" || exit 1
+        CLEAN_ONLY_MODE=true
+    fi
     local cleanup_rc=0
     perform_cleanup || cleanup_rc=$?
     show_cursor

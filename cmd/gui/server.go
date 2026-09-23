@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -32,7 +33,8 @@ type Server struct {
 
 	// Runner hooks, overridable in tests to stub the CLI subprocesses.
 	runAnalyze       func(ctx context.Context, scriptDir, path string) ([]byte, error)
-	runCleanPreview  func(ctx context.Context, rootDir string) ([]byte, error)
+	runCleanPreview  func(ctx context.Context, rootDir string) (CleanPreview, error)
+	runCleanExecute  func(ctx context.Context, rootDir string, paths []string, onProgress func(CleanProgressEvent)) (cleanExecutionResult, error)
 	runUninstallList func(ctx context.Context, rootDir string) ([]byte, error)
 	runHistory       func(ctx context.Context, rootDir string) ([]byte, error)
 
@@ -43,6 +45,7 @@ func newServer(cfg serverConfig) *Server {
 	s := &Server{cfg: cfg}
 	s.runAnalyze = defaultRunAnalyze
 	s.runCleanPreview = defaultRunCleanPreview
+	s.runCleanExecute = defaultRunCleanExecute
 	s.runUninstallList = defaultRunUninstallList
 	s.runHistory = defaultRunHistory
 
@@ -70,6 +73,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/status/stream", s.requireAuth(http.HandlerFunc(s.handleStatusStream)))
 	mux.Handle("/api/analyze", s.requireAuth(http.HandlerFunc(s.handleAnalyze)))
 	mux.Handle("/api/clean/preview", s.requireAuth(http.HandlerFunc(s.handleCleanPreview)))
+	mux.Handle("/api/clean/execute", s.requireAuth(http.HandlerFunc(s.handleCleanExecute)))
+	mux.Handle("/api/whitelist", s.requireAuth(http.HandlerFunc(s.handleWhitelist)))
 	mux.Handle("/api/uninstall/list", s.requireAuth(http.HandlerFunc(s.handleUninstallList)))
 	mux.Handle("/api/history", s.requireAuth(http.HandlerFunc(s.handleHistory)))
 	return hostGuard(originGuard(mux))
@@ -218,12 +223,119 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCleanPreview(w http.ResponseWriter, r *http.Request) {
-	out, err := s.runCleanPreview(r.Context(), s.cfg.RootDir)
+	preview, err := s.runCleanPreview(r.Context(), s.cfg.RootDir)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, parseCleanList(out))
+	writeJSON(w, http.StatusOK, preview)
+}
+
+// handleCleanExecute streams a restricted cleanup as Server-Sent Events over
+// POST (the dashboard reads the stream with fetch; EventSource cannot POST).
+func (s *Server) handleCleanExecute(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+
+	var req struct {
+		Paths []string `json:"paths"`
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, executeBodyLimit))
+	if err != nil || json.Unmarshal(body, &req) != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateCleanPaths(req.Paths); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ctx := r.Context()
+	events := make(chan CleanProgressEvent, 64)
+	go func() {
+		defer close(events)
+		result, execErr := s.runCleanExecute(ctx, s.cfg.RootDir, req.Paths, func(ev CleanProgressEvent) {
+			select {
+			case events <- ev:
+			case <-ctx.Done():
+			}
+		})
+		final := CleanProgressEvent{
+			Type:       "result",
+			FreedKB:    result.FreedKB,
+			Items:      result.Items,
+			Categories: result.Categories,
+			Cancelled:  result.Cancelled,
+		}
+		if execErr != nil {
+			final.Message = execErr.Error()
+		}
+		select {
+		case events <- final:
+		case <-ctx.Done():
+		}
+	}()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	startEvent, _ := json.Marshal(CleanProgressEvent{Type: "start"})
+	fmt.Fprintf(w, "data: %s\n\n", startEvent)
+	flusher.Flush()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-events:
+			if !ok {
+				fmt.Fprint(w, "event: end\n\n")
+				flusher.Flush()
+				return
+			}
+			payload, err := json.Marshal(ev)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", payload)
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Server) handleWhitelist(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		entries, err := readWhitelist()
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"path":    whitelistFilePath(),
+			"entries": entries,
+		})
+	case http.MethodPut:
+		var req struct {
+			Entries []string `json:"entries"`
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, executeBodyLimit))
+		if err != nil || json.Unmarshal(body, &req) != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := writeWhitelist(req.Entries); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		entries, _ := readWhitelist()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(entries)})
+	default:
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (s *Server) handleUninstallList(w http.ResponseWriter, r *http.Request) {

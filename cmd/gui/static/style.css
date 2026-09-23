@@ -191,6 +191,7 @@ body {
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; }
+.btn.danger { background: #e5484d; border-color: #e5484d; color: #fff; }
 
 .hint { color: var(--muted); font-size: 12px; }
 .hint.error { color: var(--red); }
@@ -214,6 +215,8 @@ code {
 .clean-summary-row { display: flex; align-items: center; gap: 42px; flex-wrap: wrap; }
 .clean-summary-item { display: flex; flex-direction: column; gap: 2px; }
 
+.toolbar-spacer { flex: 1; }
+
 .section-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
 .section-head {
   display: flex; align-items: center; gap: 12px;
@@ -228,6 +231,27 @@ code {
 .section-card.open .caret { transform: rotate(90deg); }
 .section-body { display: none; padding: 2px 18px 12px; }
 .section-card.open .section-body { display: block; }
+
+.row-check { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+tr.selected-row .cell-path { color: var(--text); }
+tr:not(.selected-row) .cell-path { color: var(--muted); }
+
+.exec-line { display: flex; align-items: center; gap: 9px; font-size: 13.5px; margin-bottom: 10px; }
+.progress-list {
+  max-height: 200px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel-2);
+  padding: 8px 12px; font-size: 11.5px;
+}
+.progress-list .p-row { display: flex; gap: 10px; padding: 2px 0; color: var(--muted); }
+.progress-list .p-row .p-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress-list .p-row.ok .p-status { color: var(--green); }
+.progress-list .p-row.failed .p-status { color: var(--red); }
+.progress-list .p-row .p-size { font-variant-numeric: tabular-nums; }
+
+.exec-result { display: flex; align-items: baseline; gap: 12px; margin-top: 12px; }
+
+.wl-editor { width: 100%; resize: vertical; margin: 10px 0 12px; line-height: 1.7; }
 
 /* ---------- history ---------- */
 .chart-history { height: 240px; }

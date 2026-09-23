@@ -139,13 +139,15 @@
       <header class="view-head">
         <div>
           <h1>Clean</h1>
-          <p class="view-sub">Preview what a cleanup would reclaim — nothing is deleted from here</p>
+          <p class="view-sub">Preview, select, and clean — every deletion goes through the CLI's audited safety engine</p>
         </div>
       </header>
-      <div class="banner info">Read-only preview. To actually clean, run <code>mee clean</code> in a terminal — protect paths with <code>~/.config/mole/whitelist</code>.</div>
+      <div class="banner info">Selections are executed via <code>mee clean --only-from</code>: protected, whitelisted, and in-use paths are always skipped. Every deletion is validated by the CLI's safety engine and recorded in the operations log.</div>
       <div class="card toolbar">
-        <button class="btn primary" id="clean-scan">Run preview scan</button>
+        <button class="btn" id="clean-scan">Run preview scan</button>
         <span class="hint" id="clean-status"></span>
+        <span class="toolbar-spacer"></span>
+        <button class="btn primary" id="clean-execute" disabled hidden>Clean selected</button>
       </div>
       <div class="card" id="clean-summary" hidden>
         <div class="clean-summary-row">
@@ -155,7 +157,28 @@
           <div class="clean-summary-item"><span class="stat-label" id="clean-generated">—</span></div>
         </div>
       </div>
+      <div class="card" id="clean-exec" hidden>
+        <div class="card-title" id="exec-title">Executing cleanup</div>
+        <div class="exec-line"><span class="spin" id="exec-spin"></span><span id="exec-summary">Preparing…</span></div>
+        <div class="progress-list mono" id="exec-progress-list"></div>
+        <div id="exec-result" class="exec-result" hidden>
+          <span class="stat-big accent" id="exec-freed">—</span>
+          <span class="stat-label" id="exec-result-detail"></span>
+        </div>
+      </div>
       <div id="clean-sections"></div>
+      <div class="card">
+        <div class="card-row">
+          <div class="card-title">Protected paths (clean whitelist)</div>
+          <span class="hint" id="wl-status"></span>
+        </div>
+        <p class="hint">One pattern per line — anything matching is never cleaned. Written to <code>~/.config/mole/whitelist</code>.</p>
+        <textarea id="wl-editor" class="input mono wl-editor" rows="6" spellcheck="false" placeholder="/Users/*/Library/Caches/com.example.app"></textarea>
+        <div class="toolbar">
+          <button class="btn" id="wl-save">Save</button>
+          <button class="btn" id="wl-reload">Reload</button>
+        </div>
+      </div>
     </section>
 
     <!-- Uninstall -->
@@ -219,6 +242,19 @@
       <button class="btn primary" id="auth-submit">Unlock</button>
     </div>
     <p class="hint" id="auth-error"></p>
+  </div>
+</div>
+
+<!-- Clean confirmation modal -->
+<div class="auth-overlay" id="confirm-overlay" hidden>
+  <div class="card auth-card">
+    <h2>Clean selected items?</h2>
+    <p id="confirm-text">—</p>
+    <p class="hint">Everything still passes the CLI's protection checks: whitelisted, system, and in-use paths are skipped automatically. Cleaned paths are permanently removed (not to Trash) and every deletion is recorded in the operations log.</p>
+    <div class="auth-row">
+      <button class="btn" id="confirm-cancel">Cancel</button>
+      <button class="btn danger" id="confirm-ok">Clean now</button>
+    </div>
   </div>
 </div>
 

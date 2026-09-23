@@ -1436,6 +1436,17 @@ safe_remove() {
         return 1
     fi
 
+    # Same choke point for `clean --only-from`: several app-cache flows call
+    # safe_remove directly with globbed candidates, so a filter inside
+    # safe_clean alone would miss them. Guarded by declare -f because only
+    # the clean command defines the selection list.
+    if declare -f clean_only_path_allowed > /dev/null 2>&1 &&
+        [[ "${CLEAN_ONLY_MODE:-false}" == "true" ]] &&
+        ! clean_only_path_allowed "$path"; then
+        log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "not selected"
+        return 1
+    fi
+
     # Check if path exists
     if [[ ! -e "$path" ]]; then
         return 0

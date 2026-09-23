@@ -36,20 +36,29 @@ func defaultRunAnalyze(ctx context.Context, scriptDir, path string) ([]byte, err
 	return runCommand(ctx, filepath.Join(scriptDir, "analyze.sh"), args...)
 }
 
-// defaultRunCleanPreview shells out to `mole clean --dry-run`, then returns the
-// rendered preview ledger. The child's stdin is /dev/null, which flips the CLI
-// into its non-interactive path (user-level sections only, no sudo prompt).
-func defaultRunCleanPreview(ctx context.Context, rootDir string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, cleanPreviewTimeout)
-	defer cancel()
+func defaultRunCleanPreview(ctx context.Context, rootDir string) (CleanPreview, error) {
+	// Prefer the CLI's structured summary; fall back to the preview ledger
+	// when an older CLI without `--json` is deployed.
+	if out, err := runCommand(ctx, filepath.Join(rootDir, "mole"), "clean", "--dry-run", "--json"); err == nil {
+		if payload := lastJSONLine(out); payload != nil {
+			return cleanPreviewFromCLIJSON(payload)
+		}
+	}
+
 	if _, err := runCommand(ctx, filepath.Join(rootDir, "mole"), "clean", "--dry-run"); err != nil {
-		return nil, fmt.Errorf("clean --dry-run failed: %w", err)
+		return CleanPreview{}, fmt.Errorf("clean --dry-run failed: %w", err)
 	}
 	data, err := osReadFile(cleanListPath())
 	if err != nil {
-		return nil, fmt.Errorf("read preview ledger: %w", err)
+		return CleanPreview{}, fmt.Errorf("read preview ledger: %w", err)
 	}
-	return data, nil
+	return parseCleanList(data), nil
+}
+
+func defaultRunCleanExecute(ctx context.Context, rootDir string, paths []string, onProgress func(CleanProgressEvent)) (cleanExecutionResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, cleanExecuteTimeout)
+	defer cancel()
+	return executeClean(ctx, rootDir, paths, onProgress)
 }
 
 func defaultRunUninstallList(ctx context.Context, rootDir string) ([]byte, error) {

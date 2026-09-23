@@ -492,15 +492,20 @@ function renderDisk(data) {
    Clean
    ========================================================= */
 
-let cleanScanning = false;
+const cleanState = { scanning: false, executing: false, preview: null, selected: new Set() };
 
 function setupClean() {
   $("#clean-scan").addEventListener("click", runCleanPreview);
+  $("#clean-execute").addEventListener("click", confirmExecute);
+  $("#confirm-cancel").addEventListener("click", () => { $("#confirm-overlay").hidden = true; });
+  $("#wl-save").addEventListener("click", saveWhitelist);
+  $("#wl-reload").addEventListener("click", loadWhitelist);
+  loadWhitelist();
 }
 
 async function runCleanPreview() {
-  if (cleanScanning) return;
-  cleanScanning = true;
+  if (cleanState.scanning || cleanState.executing) return;
+  cleanState.scanning = true;
   const btn = $("#clean-scan");
   btn.disabled = true;
   const startedAt = Date.now();
@@ -520,11 +525,14 @@ async function runCleanPreview() {
   } finally {
     clearInterval(timer);
     btn.disabled = false;
-    cleanScanning = false;
+    cleanState.scanning = false;
   }
 }
 
 function renderClean(p) {
+  cleanState.preview = p;
+  cleanState.selected = new Set();
+
   const summary = $("#clean-summary");
   summary.hidden = false;
   $("#clean-total").textContent = p.total_known ? fmtBytes(p.total_bytes) + (p.partial ? "+" : "") : "partial";
@@ -533,7 +541,7 @@ function renderClean(p) {
   $("#clean-generated").textContent = p.generated_at ? "scanned " + p.generated_at : "";
 
   const wrap = $("#clean-sections");
-  wrap.replaceChildren(...(p.sections || []).map((section) => {
+  const sectionNodes = (p.sections || []).map((section) => {
     const card = el("div", { class: "section-card open" });
     const head = el("button", {
       class: "section-head",
@@ -542,28 +550,219 @@ function renderClean(p) {
       el("span", { class: "caret", text: "▶" }),
       el("span", { text: section.name }),
       el("span", { class: "section-count", text: section.rows + " items" }),
-      el("span", { class: "section-total", text: fmtBytes(section.total_bytes) + (section.total_bytes ? "" : "") }),
+      el("span", { class: "section-total", text: fmtBytes(section.total_bytes) }),
     );
     const body = el("div", { class: "section-body" });
     const table = el("table", { class: "table" },
-      el("thead", null, el("tr", null, el("th", { text: "Path" }), el("th", { class: "num", text: "Size" }))),
+      el("thead", null, el("tr", null,
+        el("th", { text: "✓" }),
+        el("th", { text: "Path" }),
+        el("th", { class: "num", text: "Size" }),
+      )),
     );
     const tbody = el("tbody");
-    tbody.replaceChildren(...section.items.map((item) => el("tr", null,
-      el("td", { class: "cell-path mono", title: item.path },
-        document.createTextNode(truncateMiddle(item.path, 70)),
-        item.covered_by ? el("span", { class: "hint", text: "  · counted under " + truncateMiddle(item.coveredBy, 40) }) : null,
-      ),
-      el("td", { class: "num", text: item.size_known ? item.size_display + (item.items > 1 ? ` · ${item.items}` : "") : "unknown" }),
-    )));
+    tbody.replaceChildren(...section.items.map((item) => {
+      const box = el("input", { type: "checkbox", class: "row-check" });
+      box.checked = true;
+      box.dataset.path = item.path;
+      box.dataset.size = String(item.size_bytes || 0);
+      box.addEventListener("change", () => {
+        box.closest("tr").classList.toggle("selected-row", box.checked);
+        updateCleanSelection();
+      });
+      const row = el("tr", { class: "selected-row" },
+        el("td", null, box),
+        el("td", { class: "cell-path mono", title: item.path },
+          document.createTextNode(truncateMiddle(item.path, 70)),
+          item.covered_by ? el("span", { class: "hint", text: "  · counted under " + truncateMiddle(item.coveredBy, 40) }) : null,
+        ),
+        el("td", { class: "num", text: item.size_known ? item.size_display + (item.items > 1 ? ` · ${item.items}` : "") : "unknown" }),
+      );
+      cleanState.selected.add(item.path);
+      return row;
+    }));
     table.append(tbody);
     body.append(table);
     card.append(head, body);
     return card;
-  }));
+  });
+  wrap.replaceChildren(...sectionNodes);
 
   if (!(p.sections || []).length) {
-    wrap.replaceChildren(el("div", { class: "card hint", text: "Nothing found — or the scan was interrupted. Try again." }));
+    wrap.replaceChildren(el("div", { class: "card hint", text: "Nothing found — your system is already clean, or the scan was interrupted." }));
+  }
+  updateCleanSelection();
+}
+
+function updateCleanSelection() {
+  $$("#clean-sections .row-check").forEach((box) => {
+    if (box.checked) cleanState.selected.add(box.dataset.path);
+    else cleanState.selected.delete(box.dataset.path);
+  });
+  let bytes = 0;
+  $$("#clean-sections .row-check:checked").forEach((box) => {
+    bytes += parseInt(box.dataset.size || "0", 10);
+  });
+  const btn = $("#clean-execute");
+  btn.hidden = cleanState.selected.size === 0;
+  btn.disabled = cleanState.selected.size === 0 || cleanState.executing;
+  btn.textContent = `Clean selected (${cleanState.selected.size} · ≈${fmtBytes(bytes)})`;
+}
+
+/* ---------- execution ---------- */
+
+function confirmExecute() {
+  const paths = [...cleanState.selected];
+  if (!paths.length || cleanState.executing) return;
+  let bytes = 0;
+  $$("#clean-sections .row-check:checked").forEach((box) => {
+    bytes += parseInt(box.dataset.size || "0", 10);
+  });
+  $("#confirm-text").textContent =
+    `${paths.length} path${paths.length === 1 ? "" : "s"} · about ${fmtBytes(bytes)} reclaimable. This runs the real cleanup.`;
+  $("#confirm-overlay").hidden = false;
+  $("#confirm-ok").onclick = () => {
+    $("#confirm-overlay").hidden = true;
+    executeCleanSelection(paths);
+  };
+}
+
+async function executeCleanSelection(paths) {
+  if (cleanState.executing) return;
+  cleanState.executing = true;
+  $("#clean-execute").disabled = true;
+  $("#clean-scan").disabled = true;
+
+  const execCard = $("#clean-exec");
+  const resultList = $("#exec-progress-list");
+  execCard.hidden = false;
+  $("#exec-title").textContent = "Executing cleanup";
+  $("#exec-summary").textContent = `Starting — ${paths.length} paths selected`;
+  resultList.replaceChildren();
+  $("#exec-result").hidden = true;
+  $("#exec-spin").hidden = false;
+
+  let freedKB = 0;
+  let cleaned = 0;
+  let failed = 0;
+  let rowsShown = 0;
+  const addProgressRow = (ev) => {
+    const failedRow = /fail/i.test(ev.status || "");
+    if (failedRow) failed++;
+    else {
+      cleaned++;
+      freedKB += ev.size_kb || 0;
+    }
+    $("#exec-summary").textContent =
+      `Cleaning… ${cleaned} done${failed ? `, ${failed} failed` : ""} · ${fmtBytes(freedKB * 1024)} freed`;
+    if (rowsShown++ > 40) return; // keep the log bounded
+    resultList.append(el("div", { class: "p-row " + (failedRow ? "failed" : "ok") },
+      el("span", { class: "p-status", text: failedRow ? "✗" : "✓" }),
+      el("span", { class: "p-path", title: ev.path, text: truncateMiddle(ev.path || "", 90) }),
+      el("span", { class: "p-size", text: ev.size_kb ? fmtBytes(ev.size_kb * 1024) : "" }),
+    ));
+    resultList.scrollTop = resultList.scrollHeight;
+  };
+
+  try {
+    const res = await fetch("/api/clean/execute", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + TOKEN,
+      },
+      body: JSON.stringify({ paths }),
+    });
+    if (res.status === 401) {
+      clearToken();
+      showAuth();
+      return;
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || res.statusText);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let done = false;
+    while (!done) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        for (const line of block.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          let ev;
+          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+          if (ev.type === "progress") addProgressRow(ev);
+          if (ev.type === "result") {
+            done = true;
+            $("#exec-spin").hidden = true;
+            $("#exec-title").textContent = ev.message ? "Cleanup finished with a problem" : "Cleanup finished";
+            $("#exec-summary").textContent = ev.message ? "Error: " + ev.message : "";
+            $("#exec-result").hidden = false;
+            $("#exec-freed").textContent = fmtBytes(ev.freed_kb * 1024);
+            $("#exec-result-detail").textContent =
+              `freed · ${ev.items} items in ${ev.categories} categories` +
+              (ev.cancelled ? " · run was cancelled" : "");
+          }
+        }
+      }
+    }
+    // Refresh the preview so the list reflects what actually remains.
+    setTimeout(runCleanPreview, 800);
+  } catch (e) {
+    if (e.message !== "unauthorized") {
+      $("#exec-spin").hidden = true;
+      $("#exec-summary").textContent = "Execution failed: " + e.message;
+    }
+  } finally {
+    cleanState.executing = false;
+    $("#clean-scan").disabled = false;
+    updateCleanSelection();
+  }
+}
+
+/* ---------- whitelist editor ---------- */
+
+async function loadWhitelist() {
+  const status = $("#wl-status");
+  status.textContent = "Loading…";
+  status.className = "hint";
+  try {
+    const data = await fetchJSON("/api/whitelist");
+    $("#wl-editor").value = (data.entries || []).join("\n");
+    status.textContent = `${(data.entries || []).length} rules`;
+  } catch (e) {
+    if (e.message !== "unauthorized") {
+      status.textContent = "Load failed: " + e.message;
+      status.className = "hint error";
+    }
+  }
+}
+
+async function saveWhitelist() {
+  const status = $("#wl-status");
+  const entries = $("#wl-editor").value.split("\n").map((l) => l.trimRight()).filter((l) => l.trim() !== "");
+  status.textContent = "Saving…";
+  status.className = "hint";
+  try {
+    const res = await fetchJSON("/api/whitelist", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entries }),
+    });
+    status.textContent = `Saved · ${res.count} rules`;
+  } catch (e) {
+    if (e.message !== "unauthorized") {
+      status.textContent = "Save failed: " + e.message;
+      status.className = "hint error";
+    }
   }
 }
 

@@ -7,6 +7,8 @@ show_clean_help() {
     echo ""
     echo "Options:"
     echo "  --dry-run, -n     Preview cleanup without making changes"
+    echo "  --json            Print a machine-readable summary as the last stdout line"
+    echo "  --only-from FILE  Clean only the newline-separated paths listed in FILE (user-level, non-interactive)"
     echo "  --external PATH   Clean OS metadata from a mounted external volume"
     echo "  --whitelist       Manage protected paths"
     echo "  --debug           Show detailed operation logs"

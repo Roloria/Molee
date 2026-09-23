@@ -6,6 +6,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -139,10 +141,10 @@ func TestAnalyzePassthrough(t *testing.T) {
 	}
 }
 
-func TestCleanPreviewParsesLedger(t *testing.T) {
+func TestCleanPreviewPassthrough(t *testing.T) {
 	s := newTestServer(t)
-	s.runCleanPreview = func(_ context.Context, _ string) ([]byte, error) {
-		return []byte("# Mole Cleanup Preview - X\n=== S ===\n/tmp/a  # 1KB\n"), nil
+	s.runCleanPreview = func(_ context.Context, _ string) (CleanPreview, error) {
+		return parseCleanList([]byte("# Mole Cleanup Preview - X\n=== S ===\n/tmp/a  # 1KB\n")), nil
 	}
 	rec := get(s.Handler(), "/api/clean/preview?token=testtoken123")
 	if rec.Code != http.StatusOK {
@@ -151,6 +153,64 @@ func TestCleanPreviewParsesLedger(t *testing.T) {
 	want := `{"generated_at":"X","sections":[{"name":"S","items":[{"path":"/tmp/a","size_bytes":1000,"size_display":"1KB","items":1,"size_known":true}],"total_bytes":1000,"rows":1}],"total_bytes":1000,"total_known":true,"partial":false,"rows":1,"items":1}`
 	if got := rec.Body.String(); got != want+"\n" {
 		t.Errorf("body = %q, want %q", got, want+"\n")
+	}
+}
+
+func TestCleanExecuteRejectsUnsafePaths(t *testing.T) {
+	s := newTestServer(t)
+	executed := false
+	s.runCleanExecute = func(_ context.Context, _ string, _ []string, _ func(CleanProgressEvent)) (cleanExecutionResult, error) {
+		executed = true
+		return cleanExecutionResult{}, nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/clean/execute?token=testtoken123",
+		strings.NewReader(`{"paths":["/System","/Users/me/Library/Caches/x"]}`))
+	req.Host = "127.0.0.1:8080"
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("denylisted path: status = %d, want 400", rec.Code)
+	}
+	if executed {
+		t.Error("runner must not execute for rejected paths")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/clean/execute?token=testtoken123", strings.NewReader(`{"paths":[]}`))
+	req.Host = "127.0.0.1:8080"
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("empty selection: status = %d, want 400", rec.Code)
+	}
+}
+
+func TestValidateCleanPaths(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cases := []struct {
+		paths []string
+		ok    bool
+	}{
+		{[]string{home + "/Library/Caches/pip"}, true},
+		{[]string{}, false},
+		{[]string{"relative/path"}, false},
+		{[]string{"/System"}, false},
+		{[]string{"/usr/bin"}, false},
+		{[]string{home}, false},
+		{[]string{home + "/Documents"}, false},
+		{[]string{home + "/Library"}, false},
+		{[]string{home + "/Library/Logs/mole"}, false},
+		{[]string{home + "/.config/mole"}, false},
+		{[]string{"/Volumes/Backup/x"}, false},
+	}
+	for _, tc := range cases {
+		err := validateCleanPaths(tc.paths)
+		if tc.ok && err != nil {
+			t.Errorf("validateCleanPaths(%v) = %v, want nil", tc.paths, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("validateCleanPaths(%v) = nil, want error", tc.paths)
+		}
 	}
 }
 

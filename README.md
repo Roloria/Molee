@@ -37,11 +37,21 @@ make build          # builds bin/analyze-go, bin/status-go, bin/gui-go
 |---|---|---|
 | **Dashboard** | `mole status --watch` (NDJSON → SSE) | Health score, CPU/memory/network live charts, top processes, thermal/battery/proxy chips |
 | **Disk** | `mole analyze --json [path]` | Treemap with drill-down; `cleanable` candidates and large files highlighted |
-| **Clean** | `mole clean --dry-run` ledger | Sectioned preview of reclaimable space — **preview only** |
+| **Clean** | `mole clean --dry-run --json` + `clean --only-from` | Preview, select, and execute — every deletion flows through the CLI's safety engine (whitelist, protection, occupancy checks) and lands in the operations log |
 | **Uninstall** | `mole uninstall --list` | App inventory with sizes and Homebrew detection — **read-only** |
 | **History** | `mole history --json` | Freed-space-per-session chart, session and deletion logs |
 
-Security model: loopback-only listener, random per-launch token (cookie upgrade on first load), Host/Origin validation, and no delete-capable endpoints. Stop the server with `Ctrl+C`.
+Execution safety: the server only accepts paths inside your home directory (no top-level entries, never Molee's own state), and the CLI layer re-validates every deletion at its sink — protected, whitelisted, and in-use paths are always skipped. The clean whitelist is editable in the dashboard (`~/.config/mole/whitelist`, plain-text patterns).
+
+New CLI surfaces added by this fork (kept minimal and upstream-mergeable):
+
+```bash
+mo clean --dry-run --json      # machine-readable preview: single-line JSON as the last stdout line
+mo clean --json                # after a real run: {"mode":"clean_result","freed_kb":…,…}
+mo clean --only-from FILE      # clean only the newline-separated paths in FILE (user-level, non-interactive)
+```
+
+Security model: loopback-only listener, random per-launch token (cookie + Bearer), Host/Origin validation, and an execution path restricted to nested user-owned paths with the CLI's full deletion-safety engine underneath. Stop the server with `Ctrl+C`.
 
 Flags: `--addr 127.0.0.1:PORT`, `--interval 2s`, `--token …`, `--no-open` (pass `--open=false`), `--dev-static DIR` for frontend development.
 
@@ -57,8 +67,9 @@ The fork's policy is to diverge as little as possible from upstream: CLI-layer c
 ## Roadmap
 
 - [x] **P0** — fork infrastructure, rebrand, sync setup
-- [x] **P1** — read-only web dashboard (this release)
-- [ ] **P2** — `--json` outputs + subset execution for clean/purge/optimize (upstream-friendly PRs first), then GUI execution with live progress; whitelist editor
+- [x] **P1** — read-only web dashboard
+- [x] **P2** — `clean --json` / `clean --only-from` CLI surfaces, GUI execution with live progress, whitelist editor
+- [ ] **P2 remainder** — `--json` for purge/optimize/installer, optimize-whitelist editor
 - [ ] **P3** — native app packaging (Wails), scheduled cleanup, duplicate finder, Homebrew management
 
 ## Credits & license
