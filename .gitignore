@@ -65,8 +65,10 @@ journal/
 # Go build artifacts (development)
 cmd/analyze/analyze
 cmd/status/status
+cmd/gui/gui
 /status
 /analyze
+/gui
 mole-analyze
 # Go binaries
 bin/analyze-go
