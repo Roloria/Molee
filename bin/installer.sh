@@ -22,6 +22,7 @@ export MOLE_CURRENT_COMMAND="${MOLE_CURRENT_COMMAND:-installer}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/core/common.sh"
+source "$SCRIPT_DIR/../lib/core/json.sh"
 source "$SCRIPT_DIR/../lib/ui/menu_paginated.sh"
 
 cleanup() {
@@ -306,6 +307,12 @@ select_installers() {
     local -a items=("$@")
     local total_items=${#items[@]}
     local clear_line=$'\r\033[2K'
+
+    # Unattended mode (--yes): select everything without the TTY menu.
+    if [[ ! -t 0 && "${MOLE_INSTALLER_YES:-0}" == "1" ]]; then
+        MOLE_SELECTION_RESULT="all"
+        return 0
+    fi
 
     if [[ $total_items -eq 0 ]]; then
         return 1
@@ -649,7 +656,12 @@ delete_selected_installers() {
 
     # Parse selection indices
     local -a selected_indices=()
-    if [[ -n "$MOLE_SELECTION_RESULT" ]]; then
+    if [[ "$MOLE_SELECTION_RESULT" == "all" ]]; then
+        local all_index
+        for ((all_index = 0; all_index < ${#INSTALLER_PATHS[@]}; all_index++)); do
+            selected_indices+=("$all_index")
+        done
+    elif [[ -n "$MOLE_SELECTION_RESULT" ]]; then
         IFS=',' read -ra selected_indices <<< "$MOLE_SELECTION_RESULT"
     fi
 
@@ -731,6 +743,14 @@ perform_installers() {
             leave_alt_screen
             IN_ALT_SCREEN=0
         fi
+        if [[ "${INSTALLER_JSON_OUTPUT:-false}" == "true" ]]; then
+            if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+                printf '{"mode":"installer_preview","candidates":[]}\n'
+            else
+                printf '{"mode":"installer_result","deleted":0,"freed_kb":0,"failed":0}\n'
+            fi
+            return 2 # Nothing to clean
+        fi
         printf '\n'
         echo -e "${GREEN}${ICON_SUCCESS}${NC} Great! No installer files to clean"
         printf '\n'
@@ -762,7 +782,41 @@ perform_installers() {
     return 0
 }
 
+# --- machine-readable summary (--json) --------------------------------------
+# Same contract as `clean --json`: progress text first, one compact JSON
+# object as the last stdout line. Preview mode lists every scanned candidate;
+# a real run reports deletion totals.
+emit_installer_json() {
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        printf '{"mode":"installer_preview","candidates":['
+        local index first=true
+        if [[ ${#INSTALLER_PATHS[@]} -gt 0 ]]; then
+            for ((index = 0; index < ${#INSTALLER_PATHS[@]}; index++)); do
+                if [[ "$first" == "true" ]]; then
+                    first=false
+                else
+                    printf ','
+                fi
+                printf '{"path":'
+                mole_json_string "${INSTALLER_PATHS[$index]}"
+                printf ',"size_kb":%s,"source":' "${INSTALLER_SIZES[$index]}"
+                mole_json_string "${INSTALLER_SOURCES[$index]}"
+                printf '}'
+            done
+        fi
+        printf ']}\n'
+        return
+    fi
+
+    printf '{"mode":"installer_result","deleted":%d,"freed_kb":%d,"failed":%d}\n' \
+        "$total_deleted" "$total_size_freed_kb" "$total_delete_failed"
+}
+
 show_summary() {
+    if [[ "${INSTALLER_JSON_OUTPUT:-false}" == "true" ]]; then
+        emit_installer_json
+        return
+    fi
     local summary_heading="Installers cleaned"
     local -a summary_details=()
     local dry_run_mode="${MOLE_DRY_RUN:-0}"
@@ -827,6 +881,12 @@ main() {
                 ;;
             "--dry-run" | "-n")
                 export MOLE_DRY_RUN=1
+                ;;
+            "--json")
+                export INSTALLER_JSON_OUTPUT=true
+                ;;
+            "--yes")
+                export MOLE_INSTALLER_YES=1
                 ;;
             *)
                 echo "Unknown option: $arg" >&2

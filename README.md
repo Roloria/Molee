@@ -38,17 +38,25 @@ make build          # builds bin/analyze-go, bin/status-go, bin/gui-go
 | **Dashboard** | `mole status --watch` (NDJSON → SSE) | Health score, CPU/memory/network live charts, top processes, thermal/battery/proxy chips |
 | **Disk** | `mole analyze --json [path]` | Treemap with drill-down; `cleanable` candidates and large files highlighted |
 | **Clean** | `mole clean --dry-run --json` + `clean --only-from` | Preview, select, and execute — every deletion flows through the CLI's safety engine (whitelist, protection, occupancy checks) and lands in the operations log |
+| **Purge** | `purge --dry-run --json` + `purge --only-from --yes` | Project build artifacts with per-item selection; artifacts touched in the last 7 days are skipped by default |
+| **Optimize** | `optimize --dry-run --json` / `optimize --json` | Dry-run inspection and full maintenance pass with per-task outcomes; editable optimize whitelist |
 | **Uninstall** | `mole uninstall --list` | App inventory with sizes and Homebrew detection — **read-only** |
 | **History** | `mole history --json` | Freed-space-per-session chart, session and deletion logs |
 
-Execution safety: the server only accepts paths inside your home directory (no top-level entries, never Molee's own state), and the CLI layer re-validates every deletion at its sink — protected, whitelisted, and in-use paths are always skipped. The clean whitelist is editable in the dashboard (`~/.config/mole/whitelist`, plain-text patterns).
+Execution safety: the server only accepts paths inside your home directory (no top-level entries, never Molee's own state), and the CLI layer re-validates every deletion at its sink — protected, whitelisted, and in-use paths are always skipped. Both whitelists (`~/.config/mole/whitelist`, `~/.config/mole/whitelist_optimize`) are editable in the dashboard.
 
 New CLI surfaces added by this fork (kept minimal and upstream-mergeable):
 
 ```bash
-mo clean --dry-run --json      # machine-readable preview: single-line JSON as the last stdout line
-mo clean --json                # after a real run: {"mode":"clean_result","freed_kb":…,…}
-mo clean --only-from FILE      # clean only the newline-separated paths in FILE (user-level, non-interactive)
+mo clean --dry-run --json       # machine-readable preview: single-line JSON as the last stdout line
+mo clean --json                 # after a real run: {"mode":"clean_result","freed_kb":…,…}
+mo clean --only-from FILE       # clean only the newline-separated paths in FILE (user-level, non-interactive)
+mo optimize --dry-run --json    # per-task outcome report without changes
+mo optimize --json              # maintenance pass report
+mo purge --dry-run --json       # scanned project artifacts with sizes and recent flags
+mo purge --only-from FILE --yes --json   # restricted, unattended purge with a result report
+mo installer --dry-run --json   # scanned installer files
+mo installer --yes --json       # unattended installer cleanup with a result report
 ```
 
 Security model: loopback-only listener, random per-launch token (cookie + Bearer), Host/Origin validation, and an execution path restricted to nested user-owned paths with the CLI's full deletion-safety engine underneath. Stop the server with `Ctrl+C`.
@@ -68,8 +76,7 @@ The fork's policy is to diverge as little as possible from upstream: CLI-layer c
 
 - [x] **P0** — fork infrastructure, rebrand, sync setup
 - [x] **P1** — read-only web dashboard
-- [x] **P2** — `clean --json` / `clean --only-from` CLI surfaces, GUI execution with live progress, whitelist editor
-- [ ] **P2 remainder** — `--json` for purge/optimize/installer, optimize-whitelist editor
+- [x] **P2** — `--json` outputs and `--only-from` subset execution for clean/purge (+ installer/optimize reports), GUI execution with live progress, both whitelist editors
 - [ ] **P3** — native app packaging (Wails), scheduled cleanup, duplicate finder, Homebrew management
 
 ## Credits & license

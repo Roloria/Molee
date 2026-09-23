@@ -2505,6 +2505,10 @@ clean_project_artifacts() {
     PURGE_CATEGORY_PROJECT_IDS_ARRAY=("${item_project_identities[@]}")
     PURGE_CATEGORY_PROJECT_PATHS_ARRAY=("${item_project_paths[@]}")
     PURGE_CATEGORY_SIZE_UNKNOWN_FLAGS_ARRAY=("${item_size_unknown_flags[@]}")
+    # `purge --json` wants the full candidate set before selection narrows it.
+    if declare -F _purge_dump_candidates_json > /dev/null 2>&1; then
+        _purge_dump_candidates_json
+    fi
     if [[ -t 0 ]]; then
         if ! select_purge_categories "${menu_options[@]}"; then
             PURGE_CATEGORY_FULL_PATHS_ARRAY=()
@@ -2521,6 +2525,18 @@ clean_project_artifacts() {
         for ((i = 0; i < ${#menu_options[@]}; i++)); do
             if [[ "${item_cloud_flags[i]:-false}" == "true" && "${MOLE_DRY_RUN:-0}" != "1" ]]; then
                 skipped_cloud_count=$((skipped_cloud_count + 1))
+                continue
+            fi
+            # `purge --only-from`: an explicitly listed path counts as a
+            # deliberate selection, so it may also override the recent-activity
+            # default the same way a manual pick in the TUI would. Cloud
+            # protection above still applies.
+            if declare -F purge_only_path_allowed > /dev/null 2>&1 &&
+                [[ "${PURGE_ONLY_MODE:-false}" == "true" ]]; then
+                if purge_only_path_allowed "${item_paths[i]}"; then
+                    [[ -n "$PURGE_SELECTION_RESULT" ]] && PURGE_SELECTION_RESULT+=","
+                    PURGE_SELECTION_RESULT+="$i"
+                fi
                 continue
             fi
             if [[ ${item_recent_flags[i]} != "true" ]]; then

@@ -17,6 +17,7 @@ export LANG=C
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/core/common.sh"
+source "$SCRIPT_DIR/../lib/core/json.sh"
 
 source "$SCRIPT_DIR/../lib/core/sudo.sh"
 source "$SCRIPT_DIR/../lib/clean/brew.sh"
@@ -506,18 +507,8 @@ clean_only_path_allowed() {
 # The report is a single compact JSON object printed as the last stdout line;
 # progress lines above it are ordinary human output. Consumers parse `tail -1`.
 
-_clean_json_escape() {
-    local s="$1"
-    s=${s//\\/\\\\}
-    s=${s//\"/\\\"}
-    # JSON forbids raw control characters; paths legitimately never need them.
-    printf '%s' "$s" | LC_ALL=C tr -d '\000-\010\012\013\014\015\016-\037'
-}
-
 _clean_json_string() {
-    printf '"'
-    _clean_json_escape "$1"
-    printf '"'
+    mole_json_string "$1"
 }
 
 # emit_clean_preview_json walks the same deduplicated dry-run ledger as
@@ -1871,8 +1862,8 @@ perform_cleanup() {
             fi
         else
             print_summary_block "$summary_heading" "${summary_details[@]}"
+            printf '\n'
         fi
-        printf '\n'
         return 0
     fi
 
@@ -2307,8 +2298,8 @@ perform_cleanup() {
         fi
     else
         print_summary_block "$summary_heading" "${summary_details[@]}"
+        printf '\n'
     fi
-    printf '\n'
 
     return "$cleanup_cancel_rc"
 }

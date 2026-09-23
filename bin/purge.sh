@@ -28,6 +28,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'trap - EXIT; cleanup; exit 130' INT TERM
 source "$SCRIPT_DIR/../lib/core/log.sh"
+source "$SCRIPT_DIR/../lib/core/json.sh"
 source "$SCRIPT_DIR/../lib/clean/project.sh"
 
 # Purge ends at safe_remove just like clean, so initialize the invoking user's
@@ -36,6 +37,10 @@ load_mole_whitelist
 
 # Configuration
 CURRENT_SECTION=""
+PURGE_ONLY_MODE=false
+PURGE_ONLY_FROM_FILE=""
+PURGE_ONLY_PATHS=()
+PURGE_JSON_FILE=""
 
 # IMPORTANT: This file overrides start_section / end_section / note_activity
 # from lib/core/base.sh by virtue of being sourced after it. The purge variant
@@ -242,7 +247,12 @@ perform_purge() {
     cleanup_monitor
 
     case "$purge_outcome" in
-        no_candidates | cancelled) return 0 ;;
+        no_candidates | cancelled)
+            if [[ "${PURGE_JSON_OUTPUT:-false}" == "true" ]]; then
+                emit_purge_report_json "$purge_outcome" 0 0
+            fi
+            return 0
+            ;;
         scan_failed) return 1 ;;
         completed | incomplete) ;;
         *)
@@ -302,9 +312,109 @@ perform_purge() {
     # Log session end
     log_operation_session_end "purge" "${total_items_cleaned:-0}" "${total_size_cleaned:-0}"
 
-    print_summary_block "$summary_heading" "${summary_details[@]}"
-    printf '\n'
+    if [[ "${PURGE_JSON_OUTPUT:-false}" == "true" ]]; then
+        emit_purge_report_json "$purge_outcome" "$total_size_cleaned" "$total_items_cleaned"
+    else
+        print_summary_block "$summary_heading" "${summary_details[@]}"
+        printf '\n'
+    fi
     [[ "$purge_outcome" == "completed" ]]
+}
+
+# --- machine-readable summary (--json) --------------------------------------
+# Same contract as `clean --json`: one compact JSON object as the last stdout
+# line. Dry-run reports the scanned candidates; a real run reports totals.
+
+emit_purge_report_json() {
+    local purge_outcome="$1"
+    local total_size_kb="$2"
+    local total_items="$3"
+
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        if [[ -n "${PURGE_JSON_FILE:-}" && -s "$PURGE_JSON_FILE" ]]; then
+            cat "$PURGE_JSON_FILE"
+            return
+        fi
+        printf '{"mode":"purge_preview","outcome":'
+        mole_json_string "$purge_outcome"
+        printf ',"candidates":[]}\n'
+        return
+    fi
+
+    printf '{"mode":"purge_result","outcome":'
+    mole_json_string "$purge_outcome"
+    printf ',"freed_kb":%d,"items":%d,"unknown_sizes":%d}\n' \
+        "${total_size_kb:-0}" "${total_items:-0}" "${PURGE_UNKNOWN_SIZE_COUNT:-0}"
+}
+
+# Dump the scanned candidates as a preview JSON document. Called from
+# lib/clean/project.sh once its item arrays are final, before selection —
+# the item_paths/item_sizes/item_recent_flags/item_project_paths arrays are
+# visible here through bash dynamic scoping (shellcheck: SC2154).
+# shellcheck disable=SC2154
+_purge_dump_candidates_json() {
+    [[ -n "${PURGE_JSON_FILE:-}" ]] || return 0
+
+    local payload='{"mode":"purge_preview","outcome":'
+    payload+=$(mole_json_string "${PURGE_RUN_OUTCOME:-completed}")
+    payload+=',"candidates":['
+
+    local index first=true chunk
+    if [[ ${#item_paths[@]} -gt 0 ]]; then
+        for ((index = 0; index < ${#item_paths[@]}; index++)); do
+            # shellcheck disable=SC2154  # item arrays come from the caller.
+            chunk='{"path":'
+            chunk+=$(mole_json_string "${item_paths[$index]}")
+            chunk+=',"size_kb":'
+            chunk+="${item_sizes[$index]:-0}"
+            chunk+=',"recent":'
+            chunk+="${item_recent_flags[$index]:-false}"
+            chunk+=',"project":'
+            chunk+=$(mole_json_string "${item_project_paths[$index]:-}")
+            chunk+="}"
+            if [[ "$first" == "true" ]]; then
+                first=false
+            else
+                payload+=","
+            fi
+            payload+="$chunk"
+        done
+    fi
+
+    payload+=']}'
+    printf '%s\n' "$payload" > "$PURGE_JSON_FILE"
+}
+
+# Load the newline-separated artifact path list for `purge --only-from`.
+load_purge_only_paths() {
+    local file="$1"
+    if [[ ! -r "$file" ]]; then
+        echo "mo purge: --only-from file is not readable: $file" >&2
+        return 1
+    fi
+
+    PURGE_ONLY_PATHS=()
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        PURGE_ONLY_PATHS+=("$line")
+    done < "$file"
+
+    if [[ ${#PURGE_ONLY_PATHS[@]} -eq 0 ]]; then
+        echo "mo purge: --only-from file lists no paths: $file" >&2
+        return 1
+    fi
+}
+
+purge_only_path_allowed() {
+    local needle="$1" candidate
+    for candidate in "${PURGE_ONLY_PATHS[@]+"${PURGE_ONLY_PATHS[@]}"}"; do
+        [[ "$candidate" == "$needle" ]] && return 0
+    done
+    return 1
 }
 
 # Show help message
@@ -330,7 +440,13 @@ show_help() {
 # Main entry point
 main() {
     # Parse arguments
+    local pending_only_from=false
     for arg in "$@"; do
+        if [[ "$pending_only_from" == "true" ]]; then
+            PURGE_ONLY_FROM_FILE="$arg"
+            pending_only_from=false
+            continue
+        fi
         case "$arg" in
             "--paths")
                 source "$SCRIPT_DIR/../lib/manage/purge_paths.sh"
@@ -350,6 +466,12 @@ main() {
             "--yes")
                 export MOLE_PURGE_YES=1
                 ;;
+            "--json")
+                export PURGE_JSON_OUTPUT=true
+                ;;
+            "--only-from")
+                pending_only_from=true
+                ;;
             "--include-empty")
                 export MOLE_PURGE_INCLUDE_EMPTY=1
                 ;;
@@ -361,8 +483,15 @@ main() {
         esac
     done
 
+    if [[ -n "$PURGE_ONLY_FROM_FILE" ]]; then
+        load_purge_only_paths "$PURGE_ONLY_FROM_FILE" || exit 1
+        PURGE_ONLY_MODE=true
+    fi
+    if [[ "${PURGE_JSON_OUTPUT:-false}" == "true" ]]; then
+        PURGE_JSON_FILE=$(create_temp_file) || exit 1
+    fi
     start_purge
-    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" && "${PURGE_JSON_OUTPUT:-false}" != "true" ]]; then
         echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No project artifacts will be removed"
         printf '\n'
     fi

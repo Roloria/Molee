@@ -22,6 +22,7 @@ source "$SCRIPT_DIR/lib/core/common.sh"
 # Clean temp files on exit.
 trap cleanup_temp_files EXIT INT TERM
 source "$SCRIPT_DIR/lib/core/sudo.sh"
+source "$SCRIPT_DIR/lib/core/json.sh"
 source "$SCRIPT_DIR/lib/optimize/diagnostics.sh"
 source "$SCRIPT_DIR/lib/optimize/maintenance.sh"
 source "$SCRIPT_DIR/lib/optimize/catalog.sh"
@@ -53,6 +54,10 @@ json_validate() {
 }
 
 show_optimization_summary() {
+    if [[ "${OPTIMIZE_JSON_OUTPUT:-false}" == "true" ]]; then
+        emit_optimize_result_json
+        return
+    fi
     local total
     total=$(optimize_outcome_total)
     if ((total == 0)); then
@@ -165,6 +170,39 @@ announce_action() {
     echo -e "${BLUE}${ICON_ARROW} ${name}${NC}"
 }
 
+# --- machine-readable summary (--json) --------------------------------------
+# Same contract as `clean --json`: progress text first, one compact JSON
+# object as the last stdout line.
+
+emit_optimize_result_json() {
+    printf '{"mode":"optimize_result","dry_run":%s,"applied":%d,"unchanged":%d,"skipped":%d,"unavailable":%d,"attention":%d,"failed":%d,"actions":[' \
+        "$([[ "${MOLE_DRY_RUN:-0}" == "1" ]] && echo true || echo false)" \
+        "$(optimize_outcome_count "$MOLE_OPTIMIZE_OUTCOME_APPLIED")" \
+        "$(optimize_outcome_count "$MOLE_OPTIMIZE_OUTCOME_UNCHANGED")" \
+        "$(optimize_outcome_count "$MOLE_OPTIMIZE_OUTCOME_SKIPPED")" \
+        "$(optimize_outcome_count "$MOLE_OPTIMIZE_OUTCOME_UNAVAILABLE")" \
+        "$(optimize_outcome_count "$MOLE_OPTIMIZE_OUTCOME_ATTENTION")" \
+        "$(optimize_outcome_count "$MOLE_OPTIMIZE_OUTCOME_FAILED")"
+
+    local index action outcome first=true
+    if [[ ${#MOLE_OPTIMIZE_RESULT_ACTIONS[@]} -gt 0 ]]; then
+        for ((index = 0; index < ${#MOLE_OPTIMIZE_RESULT_ACTIONS[@]}; index++)); do
+            action="${MOLE_OPTIMIZE_RESULT_ACTIONS[$index]}"
+            outcome="${MOLE_OPTIMIZE_RESULT_OUTCOMES[$index]}"
+            if [[ "$first" == "true" ]]; then
+                first=false
+            else
+                printf ','
+            fi
+            printf '{"action":'
+            mole_json_string "$action"
+            printf ',"outcome":"%s"}' "$outcome"
+        done
+    fi
+
+    printf ']}\n'
+}
+
 cleanup_all() {
     local exit_status="${1:-0}"
     stop_inline_spinner 2> /dev/null || true
@@ -212,6 +250,9 @@ main() {
                 ;;
             "--dry-run")
                 export MOLE_DRY_RUN=1
+                ;;
+            "--json")
+                OPTIMIZE_JSON_OUTPUT=true
                 ;;
             "--whitelist")
                 manage_whitelist "optimize"
@@ -320,7 +361,7 @@ main() {
 
     show_optimization_summary
 
-    printf '\n'
+    [[ "${OPTIMIZE_JSON_OUTPUT:-false}" == "true" ]] || printf '\n'
     optimize_outcomes_succeeded
 }
 

@@ -127,7 +127,7 @@ function sparkOption(color, areaOpacity = 0.18) {
 
 /* ---------- routing ---------- */
 
-const views = ["dashboard", "disk", "clean", "uninstall", "history"];
+const views = ["dashboard", "disk", "clean", "purge", "optimize", "uninstall", "history"];
 const viewInit = {};
 let currentView = "dashboard";
 
@@ -179,6 +179,8 @@ const VIEW_SETUP = {
   dashboard: setupDashboard,
   disk: setupDisk,
   clean: setupClean,
+  purge: setupPurge,
+  optimize: setupOptimize,
   uninstall: setupUninstall,
   history: setupHistory,
 };
@@ -498,9 +500,9 @@ function setupClean() {
   $("#clean-scan").addEventListener("click", runCleanPreview);
   $("#clean-execute").addEventListener("click", confirmExecute);
   $("#confirm-cancel").addEventListener("click", () => { $("#confirm-overlay").hidden = true; });
-  $("#wl-save").addEventListener("click", saveWhitelist);
-  $("#wl-reload").addEventListener("click", loadWhitelist);
-  loadWhitelist();
+  $("#wl-save").addEventListener("click", () => saveWhitelistKind("clean"));
+  $("#wl-reload").addEventListener("click", () => loadWhitelistKind("clean"));
+  loadWhitelistKind("clean");
 }
 
 async function runCleanPreview() {
@@ -683,37 +685,19 @@ async function executeCleanSelection(paths) {
       throw new Error(body.error || res.statusText);
     }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let done = false;
-    while (!done) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      let idx;
-      while ((idx = buffer.indexOf("\n\n")) >= 0) {
-        const block = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        for (const line of block.split("\n")) {
-          if (!line.startsWith("data: ")) continue;
-          let ev;
-          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
-          if (ev.type === "progress") addProgressRow(ev);
-          if (ev.type === "result") {
-            done = true;
-            $("#exec-spin").hidden = true;
-            $("#exec-title").textContent = ev.message ? "Cleanup finished with a problem" : "Cleanup finished";
-            $("#exec-summary").textContent = ev.message ? "Error: " + ev.message : "";
-            $("#exec-result").hidden = false;
-            $("#exec-freed").textContent = fmtBytes(ev.freed_kb * 1024);
-            $("#exec-result-detail").textContent =
-              `freed · ${ev.items} items in ${ev.categories} categories` +
-              (ev.cancelled ? " · run was cancelled" : "");
-          }
-        }
+    await consumeSSE(res, (ev) => {
+      if (ev.type === "progress") addProgressRow(ev);
+      if (ev.type === "result") {
+        $("#exec-spin").hidden = true;
+        $("#exec-title").textContent = ev.message ? "Cleanup finished with a problem" : "Cleanup finished";
+        $("#exec-summary").textContent = ev.message ? "Error: " + ev.message : "";
+        $("#exec-result").hidden = false;
+        $("#exec-freed").textContent = fmtBytes(ev.freed_kb * 1024);
+        $("#exec-result-detail").textContent =
+          `freed · ${ev.items} items in ${ev.categories} categories` +
+          (ev.cancelled ? " · run was cancelled" : "");
       }
-    }
+    });
     // Refresh the preview so the list reflects what actually remains.
     setTimeout(runCleanPreview, 800);
   } catch (e) {
@@ -728,15 +712,283 @@ async function executeCleanSelection(paths) {
   }
 }
 
-/* ---------- whitelist editor ---------- */
+/* =========================================================
+   Purge
+   ========================================================= */
 
-async function loadWhitelist() {
-  const status = $("#wl-status");
+const purgeState = { scanning: false, executing: false, selected: new Set() };
+
+function setupPurge() {
+  $("#purge-scan").addEventListener("click", runPurgePreview);
+  $("#purge-execute").addEventListener("click", confirmPurge);
+}
+
+async function runPurgePreview() {
+  if (purgeState.scanning || purgeState.executing) return;
+  purgeState.scanning = true;
+  purgeState.selected = new Set();
+  const btn = $("#purge-scan");
+  btn.disabled = true;
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    $("#purge-status").innerHTML = `<span class="spin"></span>Scanning — ${Math.round((Date.now() - startedAt) / 1000)}s elapsed`;
+  }, 500);
+
+  try {
+    const preview = await fetchJSON("/api/purge/preview", { method: "POST" });
+    renderPurge(preview);
+    $("#purge-status").textContent = "";
+  } catch (e) {
+    if (e.message !== "unauthorized") {
+      $("#purge-status").textContent = "Scan failed: " + e.message;
+      $("#purge-status").className = "hint error";
+    }
+  } finally {
+    clearInterval(timer);
+    btn.disabled = false;
+    purgeState.scanning = false;
+  }
+}
+
+function renderPurge(preview) {
+  const card = $("#purge-table-card");
+  const tbody = $("#purge-table tbody");
+  const candidates = preview.candidates || [];
+
+  if (!candidates.length) {
+    card.hidden = false;
+    tbody.replaceChildren(el("tr", null,
+      el("td", { colspan: "4", class: "hint", text: "No rebuildable artifacts found in your project directories." })));
+    $("#purge-execute").hidden = true;
+    return;
+  }
+
+  tbody.replaceChildren(...candidates.map((item) => {
+    const box = el("input", { type: "checkbox", class: "row-check" });
+    if (item.recent) {
+      box.disabled = true;
+      box.checked = false;
+    } else {
+      box.checked = true;
+      purgeState.selected.add(item.path);
+    }
+    box.dataset.path = item.path;
+    box.dataset.size = String(item.size_kb || 0);
+    box.addEventListener("change", () => {
+      if (box.checked) purgeState.selected.add(box.dataset.path);
+      else purgeState.selected.delete(box.dataset.path);
+      updatePurgeSelection();
+    });
+    return el("tr", { class: box.checked ? "selected-row" : "" },
+      el("td", null, box),
+      el("td", { class: "cell-path mono", title: item.path },
+        document.createTextNode(truncateMiddle(item.path, 55)),
+        item.recent ? el("span", { class: "badge", text: " recent · skipped by default", style: "margin-left:8px" }) : null,
+      ),
+      el("td", { class: "hint", text: truncateMiddle(item.project || "", 40) }),
+      el("td", { class: "num", text: item.size_kb ? fmtBytes(item.size_kb * 1024) : "—" }),
+    );
+  }));
+  card.hidden = false;
+  updatePurgeSelection();
+}
+
+function updatePurgeSelection() {
+  let bytes = 0;
+  $$("#purge-table .row-check:checked").forEach((box) => {
+    bytes += parseInt(box.dataset.size || "0", 10);
+  });
+  const btn = $("#purge-execute");
+  btn.hidden = purgeState.selected.size === 0;
+  btn.disabled = purgeState.selected.size === 0 || purgeState.executing;
+  btn.textContent = `Purge selected (${purgeState.selected.size} · ≈${fmtBytes(bytes)})`;
+}
+
+function confirmPurge() {
+  const paths = [...purgeState.selected];
+  if (!paths.length || purgeState.executing) return;
+  $("#confirm-text").textContent =
+    `Permanently delete ${paths.length} build artifact director${paths.length === 1 ? "y" : "ies"}? They are rebuildable from source, but the rebuild takes time.`;
+  $("#confirm-overlay").hidden = false;
+  $("#confirm-ok").onclick = () => {
+    $("#confirm-overlay").hidden = true;
+    executePurge(paths);
+  };
+}
+
+async function executePurge(paths) {
+  if (purgeState.executing) return;
+  purgeState.executing = true;
+  $("#purge-scan").disabled = true;
+  $("#purge-execute").disabled = true;
+
+  const execCard = $("#purge-exec");
+  const resultList = $("#purge-progress-list");
+  execCard.hidden = false;
+  resultList.replaceChildren();
+  $("#purge-exec-result").hidden = true;
+  $("#purge-exec-spin").hidden = false;
+  $("#purge-exec-summary").textContent = `Starting — ${paths.length} paths selected`;
+
+  let cleaned = 0;
+  let freedKB = 0;
+  let rowsShown = 0;
+  const addRow = (ev) => {
+    cleaned++;
+    freedKB += ev.size_kb || 0;
+    $("#purge-exec-summary").textContent = `Purging… ${cleaned} done · ${fmtBytes(freedKB * 1024)} freed`;
+    if (rowsShown++ > 40) return;
+    resultList.append(el("div", { class: "p-row ok" },
+      el("span", { class: "p-status", text: "✓" }),
+      el("span", { class: "p-path", title: ev.path, text: truncateMiddle(ev.path || "", 90) }),
+      el("span", { class: "p-size", text: ev.size_kb ? fmtBytes(ev.size_kb * 1024) : "" }),
+    ));
+    resultList.scrollTop = resultList.scrollHeight;
+  };
+
+  try {
+    const res = await fetch("/api/purge/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN },
+      body: JSON.stringify({ paths }),
+    });
+    if (res.status === 401) {
+      clearToken();
+      showAuth();
+      return;
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || res.statusText);
+    }
+    await consumeSSE(res, (ev) => {
+      if (ev.type === "progress") addRow(ev);
+      if (ev.type === "result") {
+        $("#purge-exec-spin").hidden = true;
+        $("#purge-exec-summary").textContent = ev.message ? "Error: " + ev.message : "";
+        $("#purge-exec-result").hidden = false;
+        $("#purge-exec-freed").textContent = fmtBytes(ev.freed_kb * 1024);
+        $("#purge-exec-result-detail").textContent =
+          `freed · ${ev.items} artifacts` + (ev.cancelled ? " · run did not fully complete" : "");
+      }
+    });
+    setTimeout(runPurgePreview, 800);
+  } catch (e) {
+    if (e.message !== "unauthorized") {
+      $("#purge-exec-spin").hidden = true;
+      $("#purge-exec-summary").textContent = "Execution failed: " + e.message;
+    }
+  } finally {
+    purgeState.executing = false;
+    $("#purge-scan").disabled = false;
+  }
+}
+
+/* Shared reader for the SSE-over-fetch execution streams. */
+async function consumeSSE(res, onEvent) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      for (const line of block.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        try { onEvent(JSON.parse(line.slice(6))); } catch {}
+      }
+    }
+  }
+}
+
+/* =========================================================
+   Optimize
+   ========================================================= */
+
+let optimizeRunning = false;
+
+function setupOptimize() {
+  $("#optimize-inspect").addEventListener("click", () => runOptimize(true));
+  $("#optimize-run").addEventListener("click", () => runOptimize(false));
+  $("#wl-opt-save").addEventListener("click", () => saveWhitelistKind("optimize"));
+  $("#wl-opt-reload").addEventListener("click", () => loadWhitelistKind("optimize"));
+  loadWhitelistKind("optimize");
+}
+
+async function runOptimize(dryRun) {
+  if (optimizeRunning) return;
+  optimizeRunning = true;
+  $("#optimize-inspect").disabled = true;
+  $("#optimize-run").disabled = true;
+  const status = $("#optimize-status");
+  const startedAt = Date.now();
+  status.innerHTML = `<span class="spin"></span>${dryRun ? "Inspecting" : "Optimizing"}…`;
+
+  try {
+    const report = await fetchJSON("/api/optimize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dry_run: dryRun }),
+    });
+    renderOptimize(report, dryRun);
+    status.textContent = "";
+  } catch (e) {
+    if (e.message !== "unauthorized") {
+      status.textContent = "Failed: " + e.message;
+      status.className = "hint error";
+    }
+  } finally {
+    optimizeRunning = false;
+    $("#optimize-inspect").disabled = false;
+    $("#optimize-run").disabled = false;
+  }
+}
+
+const OUTCOME_LABELS = {
+  applied: ["applied", "good"],
+  unchanged: ["unchanged", ""],
+  skipped: ["skipped", ""],
+  unavailable: ["unavailable", "warn"],
+  attention: ["needs attention", "warn"],
+  failed: ["failed", "bad"],
+};
+
+function renderOptimize(report, dryRun) {
+  $("#optimize-report").hidden = false;
+  $("#optimize-report-title").textContent = dryRun
+    ? "Dry-run report — nothing was changed"
+    : "Optimization report";
+
+  const chips = [];
+  for (const [key, [label, cls]] of Object.entries(OUTCOME_LABELS)) {
+    const count = report[key] || 0;
+    if (count > 0) chips.push(el("span", { class: "chip " + cls, text: `${count} ${label}` }));
+  }
+  $("#optimize-chips").replaceChildren(...chips);
+
+  const tbody = $("#optimize-table tbody");
+  tbody.replaceChildren(...(report.actions || []).map((a) => {
+    const [label, cls] = OUTCOME_LABELS[a.outcome] || [a.outcome, ""];
+    return el("tr", null,
+      el("td", { class: "mono", text: a.action }),
+      el("td", null, el("span", { class: "badge " + cls, text: label })),
+    );
+  }));
+}
+
+/* ---------- per-kind whitelist editors ---------- */
+
+async function loadWhitelistKind(kind) {
+  const status = $(kind === "optimize" ? "#wl-opt-status" : "#wl-status");
   status.textContent = "Loading…";
   status.className = "hint";
   try {
-    const data = await fetchJSON("/api/whitelist");
-    $("#wl-editor").value = (data.entries || []).join("\n");
+    const data = await fetchJSON("/api/whitelist?kind=" + kind);
+    $(kind === "optimize" ? "#wl-opt-editor" : "#wl-editor").value = (data.entries || []).join("\n");
     status.textContent = `${(data.entries || []).length} rules`;
   } catch (e) {
     if (e.message !== "unauthorized") {
@@ -746,13 +998,14 @@ async function loadWhitelist() {
   }
 }
 
-async function saveWhitelist() {
-  const status = $("#wl-status");
-  const entries = $("#wl-editor").value.split("\n").map((l) => l.trimRight()).filter((l) => l.trim() !== "");
+async function saveWhitelistKind(kind) {
+  const status = $(kind === "optimize" ? "#wl-opt-status" : "#wl-status");
+  const editor = $(kind === "optimize" ? "#wl-opt-editor" : "#wl-editor");
+  const entries = editor.value.split("\n").map((l) => l.trimRight()).filter((l) => l.trim() !== "");
   status.textContent = "Saving…";
   status.className = "hint";
   try {
-    const res = await fetchJSON("/api/whitelist", {
+    const res = await fetchJSON("/api/whitelist?kind=" + kind, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ entries }),

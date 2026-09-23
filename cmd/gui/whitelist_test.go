@@ -18,7 +18,7 @@ func withTempHome(t *testing.T) {
 func TestWhitelistRoundtrip(t *testing.T) {
 	withTempHome(t)
 
-	entries, err := readWhitelist()
+	entries, err := readWhitelist(whitelistKindClean)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("initial read = %v, %v; want empty, nil", entries, err)
 	}
@@ -28,11 +28,11 @@ func TestWhitelistRoundtrip(t *testing.T) {
 		"/Users/*/Library/Caches/com.example.app",
 		"/Users/me/Library/Caches/bigger cache name",
 	}
-	if err := writeWhitelist(want); err != nil {
+	if err := writeWhitelist(whitelistKindClean, want); err != nil {
 		t.Fatalf("writeWhitelist: %v", err)
 	}
 
-	got, err := readWhitelist()
+	got, err := readWhitelist(whitelistKindClean)
 	if err != nil {
 		t.Fatalf("readWhitelist: %v", err)
 	}
@@ -52,11 +52,11 @@ func TestWhitelistRoundtrip(t *testing.T) {
 func TestWriteWhitelistDeduplicatesAndSkipsBlanks(t *testing.T) {
 	withTempHome(t)
 
-	err := writeWhitelist([]string{"", "  ", "/a/b", "/a/b", "/a/c"})
+	err := writeWhitelist(whitelistKindClean, []string{"", "  ", "/a/b", "/a/b", "/a/c"})
 	if err != nil {
 		t.Fatalf("writeWhitelist: %v", err)
 	}
-	got, _ := readWhitelist()
+	got, _ := readWhitelist(whitelistKindClean)
 	if len(got) != 2 || got[0] != "/a/b" || got[1] != "/a/c" {
 		t.Errorf("entries = %v, want [/a/b /a/c]", got)
 	}
@@ -65,14 +65,14 @@ func TestWriteWhitelistDeduplicatesAndSkipsBlanks(t *testing.T) {
 func TestWriteWhitelistRejectsBadInput(t *testing.T) {
 	withTempHome(t)
 
-	if err := writeWhitelist([]string{"/ok", "bad\x01control"}); err == nil {
+	if err := writeWhitelist(whitelistKindClean, []string{"/ok", "bad\x01control"}); err == nil {
 		t.Error("control character accepted")
 	}
 	many := make([]string, maxWhitelistEntries+1)
 	for i := range many {
 		many[i] = "/path/entry"
 	}
-	if err := writeWhitelist(many); err == nil {
+	if err := writeWhitelist(whitelistKindClean, many); err == nil {
 		t.Error("oversized entry list accepted")
 	}
 }

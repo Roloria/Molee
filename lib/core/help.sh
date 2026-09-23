@@ -33,6 +33,7 @@ show_optimize_help() {
     echo ""
     echo "Options:"
     echo "  --dry-run         Preview optimization without making changes"
+    echo "  --json            Print a machine-readable summary as the last stdout line"
     echo "  --whitelist       Manage protected items"
     echo "  --debug           Show detailed operation logs"
     echo "  -h, --help        Show this help message"

@@ -22,6 +22,8 @@
       <button class="nav-item active" data-view="dashboard"><span class="nav-icon">◎</span>Dashboard</button>
       <button class="nav-item" data-view="disk"><span class="nav-icon">▤</span>Disk</button>
       <button class="nav-item" data-view="clean"><span class="nav-icon">✦</span>Clean</button>
+      <button class="nav-item" data-view="purge"><span class="nav-icon">⚗</span>Purge</button>
+      <button class="nav-item" data-view="optimize"><span class="nav-icon">⚙</span>Optimize</button>
       <button class="nav-item" data-view="uninstall"><span class="nav-icon">⌫</span>Uninstall</button>
       <button class="nav-item" data-view="history"><span class="nav-icon">↺</span>History</button>
     </nav>
@@ -177,6 +179,75 @@
         <div class="toolbar">
           <button class="btn" id="wl-save">Save</button>
           <button class="btn" id="wl-reload">Reload</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Purge -->
+    <section class="view" id="view-purge">
+      <header class="view-head">
+        <div>
+          <h1>Purge</h1>
+          <p class="view-sub">Rebuildable project artifacts — node_modules, target, dist, caches</p>
+        </div>
+      </header>
+      <div class="banner info">Executed via <code>mee purge --only-from</code>. Artifacts modified in the last 7 days are marked <em>recent</em> and skipped unless you explicitly select them.</div>
+      <div class="card toolbar">
+        <button class="btn" id="purge-scan">Scan projects</button>
+        <span class="hint" id="purge-status"></span>
+        <span class="toolbar-spacer"></span>
+        <button class="btn primary" id="purge-execute" disabled hidden>Purge selected</button>
+      </div>
+      <div class="card" id="purge-exec" hidden>
+        <div class="card-title" id="purge-exec-title">Purging artifacts</div>
+        <div class="exec-line"><span class="spin" id="purge-exec-spin"></span><span id="purge-exec-summary">Preparing…</span></div>
+        <div class="progress-list mono" id="purge-progress-list"></div>
+        <div id="purge-exec-result" class="exec-result" hidden>
+          <span class="stat-big accent" id="purge-exec-freed">—</span>
+          <span class="stat-label" id="purge-exec-result-detail"></span>
+        </div>
+      </div>
+      <div class="card" id="purge-table-card" hidden>
+        <table class="table" id="purge-table">
+          <thead><tr><th>✓</th><th>Artifact</th><th>Project</th><th class="num">Size</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Optimize -->
+    <section class="view" id="view-optimize">
+      <header class="view-head">
+        <div>
+          <h1>Optimize</h1>
+          <p class="view-sub">System maintenance: caches, databases, network, Spotlight</p>
+        </div>
+      </header>
+      <div class="card toolbar">
+        <button class="btn" id="optimize-inspect">Inspect (dry run)</button>
+        <button class="btn primary" id="optimize-run">Run optimize</button>
+        <span class="hint" id="optimize-status"></span>
+      </div>
+      <div class="card" id="optimize-report" hidden>
+        <div class="card-row">
+          <div class="card-title" id="optimize-report-title">Report</div>
+          <div class="chip-row" id="optimize-chips"></div>
+        </div>
+        <table class="table" id="optimize-table">
+          <thead><tr><th>Task</th><th>Outcome</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <div class="card-row">
+          <div class="card-title">Protected items (optimize whitelist)</div>
+          <span class="hint" id="wl-opt-status"></span>
+        </div>
+        <p class="hint">Patterns for maintenance targets that must never be touched. Written to <code>~/.config/mole/whitelist_optimize</code>.</p>
+        <textarea id="wl-opt-editor" class="input mono wl-editor" rows="5" spellcheck="false" placeholder="/path/or/pattern"></textarea>
+        <div class="toolbar">
+          <button class="btn" id="wl-opt-save">Save</button>
+          <button class="btn" id="wl-opt-reload">Reload</button>
         </div>
       </div>
     </section>

@@ -37,6 +37,9 @@ type Server struct {
 	runCleanExecute  func(ctx context.Context, rootDir string, paths []string, onProgress func(CleanProgressEvent)) (cleanExecutionResult, error)
 	runUninstallList func(ctx context.Context, rootDir string) ([]byte, error)
 	runHistory       func(ctx context.Context, rootDir string) ([]byte, error)
+	runOptimize      func(ctx context.Context, rootDir string, dryRun bool) (OptimizeReport, error)
+	runPurgePreview  func(ctx context.Context, rootDir string) (PurgePreview, error)
+	runPurgeExecute  func(ctx context.Context, rootDir string, paths []string, onProgress func(CleanProgressEvent)) (PurgeResult, error)
 
 	staticFS fs.FS
 }
@@ -48,6 +51,9 @@ func newServer(cfg serverConfig) *Server {
 	s.runCleanExecute = defaultRunCleanExecute
 	s.runUninstallList = defaultRunUninstallList
 	s.runHistory = defaultRunHistory
+	s.runOptimize = defaultRunOptimize
+	s.runPurgePreview = defaultRunPurgePreview
+	s.runPurgeExecute = defaultRunPurgeExecute
 
 	if cfg.StaticDir != "" {
 		s.staticFS = os.DirFS(cfg.StaticDir)
@@ -75,6 +81,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/clean/preview", s.requireAuth(http.HandlerFunc(s.handleCleanPreview)))
 	mux.Handle("/api/clean/execute", s.requireAuth(http.HandlerFunc(s.handleCleanExecute)))
 	mux.Handle("/api/whitelist", s.requireAuth(http.HandlerFunc(s.handleWhitelist)))
+	mux.Handle("/api/optimize", s.requireAuth(http.HandlerFunc(s.handleOptimize)))
+	mux.Handle("/api/purge/preview", s.requireAuth(http.HandlerFunc(s.handlePurgePreview)))
+	mux.Handle("/api/purge/execute", s.requireAuth(http.HandlerFunc(s.handlePurgeExecute)))
 	mux.Handle("/api/uninstall/list", s.requireAuth(http.HandlerFunc(s.handleUninstallList)))
 	mux.Handle("/api/history", s.requireAuth(http.HandlerFunc(s.handleHistory)))
 	return hostGuard(originGuard(mux))
@@ -306,16 +315,136 @@ func (s *Server) handleCleanExecute(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleOptimize runs a dry-run inspection or a real optimize pass and
+// returns the CLI's structured report. `{"dry_run":true}` previews.
+func (s *Server) handleOptimize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		DryRun bool `json:"dry_run"`
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, executeBodyLimit))
+	if err != nil || len(body) == 0 || json.Unmarshal(body, &req) != nil {
+		req.DryRun = false
+	}
+	report, err := s.runOptimize(r.Context(), s.cfg.RootDir, req.DryRun)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+// handlePurgePreview returns the scanned project artifacts as candidates.
+func (s *Server) handlePurgePreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	preview, err := s.runPurgePreview(r.Context(), s.cfg.RootDir)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
+}
+
+// handlePurgeExecute streams a restricted purge as Server-Sent Events over
+// POST, mirroring the clean execution flow.
+func (s *Server) handlePurgeExecute(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+
+	var req struct {
+		Paths []string `json:"paths"`
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, executeBodyLimit))
+	if err != nil || json.Unmarshal(body, &req) != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateCleanPaths(req.Paths); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ctx := r.Context()
+	events := make(chan CleanProgressEvent, 64)
+	go func() {
+		defer close(events)
+		result, execErr := s.runPurgeExecute(ctx, s.cfg.RootDir, req.Paths, func(ev CleanProgressEvent) {
+			select {
+			case events <- ev:
+			case <-ctx.Done():
+			}
+		})
+		final := CleanProgressEvent{
+			Type:      "result",
+			FreedKB:   result.FreedKB,
+			Items:     result.Items,
+			Cancelled: result.Outcome != "completed",
+		}
+		if execErr != nil {
+			final.Message = execErr.Error()
+		}
+		select {
+		case events <- final:
+		case <-ctx.Done():
+		}
+	}()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	startEvent, _ := json.Marshal(CleanProgressEvent{Type: "start"})
+	fmt.Fprintf(w, "data: %s\n\n", startEvent)
+	flusher.Flush()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-events:
+			if !ok {
+				fmt.Fprint(w, "event: end\n\n")
+				flusher.Flush()
+				return
+			}
+			payload, err := json.Marshal(ev)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", payload)
+			flusher.Flush()
+		}
+	}
+}
+
 func (s *Server) handleWhitelist(w http.ResponseWriter, r *http.Request) {
+	kind := r.URL.Query().Get("kind")
+	if kind == "" {
+		kind = whitelistKindClean
+	}
+	if kind != whitelistKindClean && kind != whitelistKindOptimize {
+		writeJSONError(w, http.StatusBadRequest, "unknown whitelist kind")
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
-		entries, err := readWhitelist()
+		entries, err := readWhitelist(kind)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"path":    whitelistFilePath(),
+			"path":    whitelistFilePath(kind),
+			"kind":    kind,
 			"entries": entries,
 		})
 	case http.MethodPut:
@@ -327,11 +456,11 @@ func (s *Server) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		if err := writeWhitelist(req.Entries); err != nil {
+		if err := writeWhitelist(kind, req.Entries); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		entries, _ := readWhitelist()
+		entries, _ := readWhitelist(kind)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(entries)})
 	default:
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")

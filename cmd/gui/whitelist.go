@@ -19,16 +19,28 @@ const (
 	maxWhitelistLineLength = 4096
 )
 
-func whitelistFilePath() string {
+// Whitelist kinds. The clean whitelist protects caches; the optimize
+// whitelist protects maintenance targets. Both are plain newline-separated
+// pattern files maintained by lib/manage/whitelist.sh.
+const (
+	whitelistKindClean    = "clean"
+	whitelistKindOptimize = "optimize"
+)
+
+func whitelistFilePath(kind string) string {
+	name := "whitelist"
+	if kind == whitelistKindOptimize {
+		name = "whitelist_optimize"
+	}
 	home, err := osUserHomeDir()
 	if err != nil {
 		return filepath.Join(string(filepath.Separator), "dev", "null")
 	}
-	return filepath.Join(home, ".config", "mole", "whitelist")
+	return filepath.Join(home, ".config", "mole", name)
 }
 
-func readWhitelist() ([]string, error) {
-	data, err := osReadFile(whitelistFilePath())
+func readWhitelist(kind string) ([]string, error) {
+	data, err := os.ReadFile(whitelistFilePath(kind))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return []string{}, nil
@@ -51,7 +63,7 @@ func readWhitelist() ([]string, error) {
 	return entries, nil
 }
 
-func writeWhitelist(entries []string) error {
+func writeWhitelist(kind string, entries []string) error {
 	if len(entries) > maxWhitelistEntries {
 		return fmt.Errorf("too many entries (max %d)", maxWhitelistEntries)
 	}
@@ -76,7 +88,7 @@ func writeWhitelist(entries []string) error {
 		builder.WriteString("\n")
 	}
 
-	path := whitelistFilePath()
+	path := whitelistFilePath(kind)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
